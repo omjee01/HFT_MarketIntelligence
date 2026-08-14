@@ -1,0 +1,1 @@
+rootProject.name = "hft-market-intelligence"

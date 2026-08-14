@@ -1,0 +1,158 @@
+spring:
+  application:
+    name: hft-market-intelligence
+  profiles:
+    active: dev
+
+  # ─── JPA ────────────────────────────────────────────────────────────────────
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.H2Dialect
+
+  # ─── Jackson ────────────────────────────────────────────────────────────────
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: NON_NULL
+    time-zone: UTC
+
+  # ─── Cache ──────────────────────────────────────────────────────────────────
+  cache:
+    type: simple        # 'redis' in prod, 'simple' for dev without Redis
+
+# ─── Server ─────────────────────────────────────────────────────────────────
+server:
+  port: 8080
+  servlet:
+    context-path: /
+  error:
+    include-message: always
+    include-binding-errors: always
+
+# ─── Actuator ───────────────────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+
+# ─── SpringDoc / Swagger ─────────────────────────────────────────────────────
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    display-request-duration: true
+
+# ─── HFT Platform Configuration ──────────────────────────────────────────────
+hft:
+  # API Keys — set real keys in application-dev.yml or environment variables
+  alpha-vantage:
+    api-key: ${ALPHA_VANTAGE_API_KEY:demo}
+    base-url: https://www.alphavantage.co/query
+    rate-limit-per-minute: 5          # Free tier: 5/min, 500/day
+
+  yahoo-finance:
+    base-url: https://query1.finance.yahoo.com
+    enabled: true
+
+  nse-india:
+    base-url: https://www.nseindia.com/api
+    enabled: true
+    user-agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+
+  newsapi:
+    api-key: ${NEWSAPI_API_KEY:}
+    base-url: https://newsapi.org/v2
+    enabled: false
+
+  twitter:
+    bearer-token: ${TWITTER_BEARER_TOKEN:}
+    enabled: false
+
+  reddit:
+    client-id: ${REDDIT_CLIENT_ID:}
+    client-secret: ${REDDIT_CLIENT_SECRET:}
+    enabled: false
+
+  fred:
+    api-key: ${FRED_API_KEY:}
+    base-url: https://api.stlouisfed.org/fred
+    enabled: false
+
+  # Market Hours (IST timezone stored here)
+  market:
+    us:
+      open-time: "09:30"
+      close-time: "16:00"
+      timezone: "America/New_York"
+    india:
+      open-time: "09:15"
+      close-time: "15:30"
+      timezone: "Asia/Kolkata"
+
+  # Analysis Settings
+  analysis:
+    technical:
+      rsi-period: 14
+      macd-fast: 12
+      macd-slow: 26
+      macd-signal: 9
+      bb-period: 20
+      bb-std-dev: 2.0
+      atr-period: 14
+      sma-periods: [20, 50, 200]
+      ema-periods: [9, 21, 55]
+    sentiment:
+      refresh-interval-minutes: 15
+    fundamental:
+      refresh-interval-hours: 24
+
+  # Recommendation Settings
+  recommendation:
+    composite-weights:
+      technical: 0.35
+      fundamental: 0.25
+      sentiment: 0.20
+      macro: 0.15
+      ml: 0.05
+    min-confidence-for-buy: 65.0
+    min-liquidity-avg-volume: 100000
+    min-market-cap-india-crores: 500
+    min-market-cap-us-billion: 1.0
+    min-risk-reward-ratio: 2.0
+    top-recommendations-count: 5
+
+  # Scheduling
+  scheduler:
+    market-data-poll-ms: 500
+    ta-compute-interval-ms: 60000
+    sentiment-refresh-cron: "0 */15 * * * *"
+    daily-report-cron: "0 0 8 * * MON-FRI"
+
+  # JWT
+  jwt:
+    secret: ${JWT_SECRET:hft-platform-secret-key-change-in-production-min-256-bit}
+    expiration-ms: 900000         # 15 minutes
+    refresh-expiration-ms: 604800000  # 7 days
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  level:
+    com.hft: DEBUG
+    org.springframework.web: INFO
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

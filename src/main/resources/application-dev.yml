@@ -1,0 +1,74 @@
+# ─── DEV PROFILE ─────────────────────────────────────────────────────────────
+# This file is for local development. Do NOT commit real API keys.
+# Either set them here locally (add to .gitignore) or export as env variables:
+#   export ALPHA_VANTAGE_API_KEY=your_key_here
+#   export NEWSAPI_API_KEY=your_key_here
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:hftdb;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: true
+
+  cache:
+    type: simple
+
+  # Kafka — no local broker in dev; admin won't block startup, listeners won't auto-start
+  kafka:
+    bootstrap-servers: localhost:9092
+    admin:
+      fail-fast: false        # don't crash if broker is unreachable on startup
+    listener:
+      auto-startup: false     # don't spin up consumers without a live broker
+    consumer:
+      group-id: hft-dev-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+hft:
+  # Override to enable/disable specific integrations in dev
+  alpha-vantage:
+    api-key: ${ALPHA_VANTAGE_API_KEY:demo}    # 'demo' key works for limited endpoints
+
+  newsapi:
+    enabled: ${NEWSAPI_ENABLED:false}
+
+  twitter:
+    enabled: ${TWITTER_ENABLED:false}
+
+  reddit:
+    enabled: ${REDDIT_ENABLED:false}
+
+  # Slower polling in dev to avoid hitting API limits
+  scheduler:
+    market-data-poll-ms: 5000
+
+management:
+  health:
+    redis:
+      enabled: false    # Redis not needed in dev (cache.type=simple)
+
+logging:
+  level:
+    com.hft: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.springframework.security: DEBUG
