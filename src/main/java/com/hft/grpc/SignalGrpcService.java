@@ -3,11 +3,13 @@ package com.hft.grpc;
 import com.hft.grpc.proto.*;
 import com.hft.model.enums.Market;
 import com.hft.service.signal.RecommendationEngine;
+import com.hft.streams.StreamSinkBridge;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import reactor.core.Disposable;
 
 import java.util.List;
 
@@ -22,6 +24,7 @@ import java.util.List;
 public class SignalGrpcService extends SignalServiceGrpc.SignalServiceImplBase {
 
     private final RecommendationEngine engine;
+    private final StreamSinkBridge     sinkBridge;
 
     @Override
     public void getRecommendation(RecommendationRequest request,
@@ -75,17 +78,30 @@ public class SignalGrpcService extends SignalServiceGrpc.SignalServiceImplBase {
     }
 
     /**
-     * Single-shot server-streaming for a specific symbol's recommendation.
-     * Stage 3 will wire this to Kafka Sinks for real-time streaming.
+     * Server-streaming: subscribe to enriched signals from Kafka Streams via StreamSinkBridge.
+     * Emits a snapshot recommendation first, then pushes live enriched signals as they arrive.
      */
     @Override
     public void streamSignals(RecommendationRequest request,
                               StreamObserver<TradeRecommendationProto> responseObserver) {
         try {
             Market market = ProtoMapper.fromProto(request.getMarket());
-            engine.generateRecommendation(request.getSymbol(), market)
+            String symbol = request.getSymbol();
+
+            // Snapshot: emit the current recommendation immediately
+            engine.generateRecommendation(symbol, market)
                     .ifPresent(r -> responseObserver.onNext(ProtoMapper.toProto(r)));
-            responseObserver.onCompleted();
+
+            // Live: subscribe to enriched signals for this symbol from Kafka Streams
+            Disposable subscription = sinkBridge.signalFlux(market)
+                    .filter(r -> symbol == null || symbol.isBlank() || symbol.equals(r.getSymbol()))
+                    .subscribe(
+                            signal -> responseObserver.onNext(ProtoMapper.toProto(signal)),
+                            error  -> responseObserver.onError(Status.INTERNAL.withCause(error).asRuntimeException()),
+                            responseObserver::onCompleted);
+
+            io.grpc.Context.current().withCancellation().addListener(
+                    ctx -> subscription.dispose(), java.util.concurrent.Executors.newSingleThreadExecutor());
         } catch (Exception e) {
             log.error("[gRPC] streamSignals failed for {}: {}", request.getSymbol(), e.getMessage());
             responseObserver.onError(Status.INTERNAL.withCause(e).asRuntimeException());

@@ -27,6 +27,20 @@ spring:
   cache:
     type: simple        # 'redis' in prod, 'simple' for dev without Redis
 
+  # ─── Kafka Streams ───────────────────────────────────────────────────────────
+  kafka:
+    streams:
+      application-id: hft-market-intelligence-streams
+      # Default serdes — topology overrides these per-stream with JSON serdes
+      properties:
+        default.key.serde: org.apache.kafka.common.serialization.Serdes$StringSerde
+        default.value.serde: org.apache.kafka.common.serialization.Serdes$StringSerde
+        # Low latency: process immediately without batching
+        commit.interval.ms: 100
+        cache.max.bytes.buffering: 0
+        # Tolerate broker unavailability on startup (matched with fail-fast=false)
+        num.stream.threads: 2
+
   # ─── GraphQL ─────────────────────────────────────────────────────────────────
   graphql:
     graphiql:

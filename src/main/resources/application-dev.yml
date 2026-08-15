@@ -35,6 +35,8 @@ spring:
       fail-fast: false        # don't crash if broker is unreachable on startup
     listener:
       auto-startup: false     # don't spin up consumers without a live broker
+    streams:
+      auto-startup: false     # don't start Kafka Streams without a live broker
     consumer:
       group-id: hft-dev-group
       auto-offset-reset: earliest

@@ -3,16 +3,18 @@ package com.hft.config;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.annotation.EnableKafkaStreams;
 import org.springframework.kafka.config.TopicBuilder;
 
 /**
- * Kafka topic definitions for the HFT event streaming pipeline.
+ * Kafka topic definitions and Streams enablement for the HFT event streaming pipeline.
  * Topics are auto-created on application startup (if they don't exist).
  */
 @Configuration
+@EnableKafkaStreams
 public class KafkaConfig {
 
-    // ─── Topic Name Constants (use these everywhere) ─────────────────────────
+    // ─── Raw input topics ────────────────────────────────────────────────────
     public static final String TOPIC_MARKET_DATA_RAW   = "market-data-raw";
     public static final String TOPIC_TA_RESULTS        = "ta-results";
     public static final String TOPIC_SENTIMENT_SCORES  = "sentiment-scores";
@@ -23,6 +25,11 @@ public class KafkaConfig {
     public static final String TOPIC_ALERTS            = "alerts";
     public static final String TOPIC_NEWS_RAW          = "news-raw";
     public static final String TOPIC_SOCIAL_RAW        = "social-raw";
+
+    // ─── Kafka Streams output topics ─────────────────────────────────────────
+    public static final String TOPIC_QUOTES_AGGREGATED = "quotes-aggregated";  // latest quote per symbol
+    public static final String TOPIC_CANDLES_1M        = "candles-1m";         // 1-min OHLCV candles
+    public static final String TOPIC_SIGNALS_ENRICHED  = "signals-enriched";   // signals joined with live quote
 
     @Bean
     public NewTopic marketDataRawTopic() {
@@ -99,6 +106,33 @@ public class KafkaConfig {
     @Bean
     public NewTopic socialRawTopic() {
         return TopicBuilder.name(TOPIC_SOCIAL_RAW)
+                .partitions(16)
+                .replicas(1)
+                .build();
+    }
+
+    // ─── Streams output topics ────────────────────────────────────────────────
+
+    @Bean
+    public NewTopic quotesAggregatedTopic() {
+        return TopicBuilder.name(TOPIC_QUOTES_AGGREGATED)
+                .partitions(64)   // same as input — partitioned by symbol hash
+                .replicas(1)
+                .build();
+    }
+
+    @Bean
+    public NewTopic candles1mTopic() {
+        return TopicBuilder.name(TOPIC_CANDLES_1M)
+                .partitions(64)
+                .replicas(1)
+                .compact()        // keep only latest candle per key (symbol + window)
+                .build();
+    }
+
+    @Bean
+    public NewTopic signalsEnrichedTopic() {
+        return TopicBuilder.name(TOPIC_SIGNALS_ENRICHED)
                 .partitions(16)
                 .replicas(1)
                 .build();
