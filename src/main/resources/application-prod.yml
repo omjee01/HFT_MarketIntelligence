@@ -104,6 +104,13 @@ hft:
     expiration-ms: 900000          # 15 min
     refresh-expiration-ms: 604800000
 
+  admin:
+    secrets-key: ${ADMIN_SECRETS_KEY}   # MUST be set — no default in prod
+
+  identity:
+    seed-test-user:
+      enabled: false   # never auto-create a known test account in production
+
   scheduler:
     market-data-poll-ms: 500      # live polling at 500ms
 

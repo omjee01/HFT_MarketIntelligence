@@ -125,21 +125,44 @@ hft:
   newsapi:
     api-key: ${NEWSAPI_API_KEY:}
     base-url: https://newsapi.org/v2
-    enabled: false
+    enabled: true    # safe: fetchNewsApi() no-ops when api-key is blank
 
   twitter:
     bearer-token: ${TWITTER_BEARER_TOKEN:}
-    enabled: false
+    enabled: false    # deferred — no free tier, budget decision (see HFT_ARCHITECTURE.md §24.2)
 
   reddit:
     client-id: ${REDDIT_CLIENT_ID:}
     client-secret: ${REDDIT_CLIENT_SECRET:}
-    enabled: false
+    enabled: true    # safe: no-ops when client-id/secret are blank
 
   fred:
     api-key: ${FRED_API_KEY:}
     base-url: https://api.stlouisfed.org/fred
-    enabled: false
+    enabled: true    # safe: fetchFredLatestValue() no-ops when api-key is blank
+
+  # Phase 0b — real intelligence sources (HFT_ARCHITECTURE.md §24.2), all free/no-key
+  stocktwits:
+    base-url: https://api.stocktwits.com/api/2
+    enabled: true
+
+  sec-edgar:
+    base-url: https://efts.sec.gov/LATEST/search-index
+    user-agent: "HFT-Market-Intelligence-Platform research@hmip.local"   # SEC EDGAR fair-access policy requires an identifying UA
+    enabled: true
+
+  gdelt:
+    base-url: https://api.gdeltproject.org/api/v2
+    enabled: true
+
+  rbi-nse:
+    rbi-base-url: https://api.rbi.org.in
+    nse-base-url: https://www.nseindia.com/api
+    enabled: true
+
+  screener-in:
+    base-url: https://www.screener.in/api
+    enabled: true
 
   # Market Hours (IST timezone stored here)
   market:
@@ -196,6 +219,15 @@ hft:
     secret: ${JWT_SECRET:hft-platform-secret-key-change-in-production-min-256-bit}
     expiration-ms: 900000         # 15 minutes
     refresh-expiration-ms: 604800000  # 7 days
+
+  # Admin-managed platform API credential encryption (any-length string, SHA-256 derived to AES-256)
+  admin:
+    secrets-key: ${ADMIN_SECRETS_KEY:hft-platform-admin-secrets-key-change-in-production}
+
+  # Seeds one USER+ADMIN test account (PTD2315) on startup if it doesn't already exist
+  identity:
+    seed-test-user:
+      enabled: true
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 logging:

@@ -52,13 +52,13 @@ hft:
     api-key: ${ALPHA_VANTAGE_API_KEY:demo}    # 'demo' key works for limited endpoints
 
   newsapi:
-    enabled: ${NEWSAPI_ENABLED:false}
+    enabled: ${NEWSAPI_ENABLED:true}    # safe: no-ops without NEWSAPI_API_KEY
 
   twitter:
-    enabled: ${TWITTER_ENABLED:false}
+    enabled: ${TWITTER_ENABLED:false}   # deferred — no free tier
 
   reddit:
-    enabled: ${REDDIT_ENABLED:false}
+    enabled: ${REDDIT_ENABLED:true}     # safe: no-ops without REDDIT_CLIENT_ID/SECRET
 
   # Slower polling in dev to avoid hitting API limits
   scheduler:

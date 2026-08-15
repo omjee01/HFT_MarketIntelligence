@@ -2,9 +2,12 @@ package com.hft.service.analysis;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hft.admin.PlatformCredentialProvider;
+import com.hft.admin.PlatformSettingsService;
 import com.hft.config.CacheConfig;
 import com.hft.model.domain.MacroData;
 import com.hft.model.enums.Market;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.OkHttpClient;
@@ -15,14 +18,22 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.net.URLEncoder;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
  * Macroeconomic & Geopolitical Analysis Service.
  *
- * US Data Sources: FRED API (Federal Reserve Economic Data)
- * India Data Sources: RBI press releases, NSE FII/DII data
+ * US Data Sources: FRED API (Federal Reserve Economic Data), GDELT (geopolitical risk)
+ * India Data Sources: NSE FII/DII daily flow (real, verified), GDELT (geopolitical risk).
+ *   RBI repo rate/CPI/GDP remain on the Phase-1 fallback values — no publicly documented
+ *   free RBI REST API was found during Phase 0 (see HFT_ARCHITECTURE.md §24.2 and the
+ *   Phase 0 implementation report); revisit if RBI publishes one, or budget a paid data
+ *   vendor if this needs to be real sooner.
  *
  * Computes:
  *  - MacroScore (0–100): higher = more favorable macro environment
@@ -36,6 +47,7 @@ public class MacroGeopoliticalService {
 
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final PlatformSettingsService platformSettingsService;
 
     @Value("${hft.fred.api-key:}")
     private String fredApiKey;
@@ -45,6 +57,27 @@ public class MacroGeopoliticalService {
 
     @Value("${hft.fred.enabled:false}")
     private boolean fredEnabled;
+
+    @Value("${hft.gdelt.base-url:https://api.gdeltproject.org/api/v2}")
+    private String gdeltBaseUrl;
+
+    @Value("${hft.gdelt.enabled:false}")
+    private boolean gdeltEnabled;
+
+    @Value("${hft.rbi-nse.nse-base-url:https://www.nseindia.com/api}")
+    private String nseBaseUrlForMacro;
+
+    @Value("${hft.rbi-nse.enabled:false}")
+    private boolean rbiNseEnabled;
+
+    @Value("${hft.nse-india.user-agent}")
+    private String nseUserAgent;
+
+    // ─── Admin-settings override (com.hft.admin) — checked before the @Value default ──
+
+    private String resolveFredApiKey() {
+        return platformSettingsService.getOverride(PlatformCredentialProvider.FRED, "apiKey").orElse(fredApiKey);
+    }
 
     // FRED Series IDs
     private static final String SERIES_FED_RATE  = "DFF";       // Fed Funds Rate
@@ -75,7 +108,7 @@ public class MacroGeopoliticalService {
                 .lastUpdated(LocalDateTime.now())
                 .dataSource("FRED, Yahoo Finance, Reuters");
 
-        if (fredEnabled && !fredApiKey.isBlank()) {
+        if (fredEnabled && !resolveFredApiKey().isBlank()) {
             // Fetch live data from FRED
             builder.interestRate(fetchFredLatestValue(SERIES_FED_RATE));
             builder.cpiInflationRate(fetchFredLatestValue(SERIES_CPI));
@@ -106,41 +139,144 @@ public class MacroGeopoliticalService {
                               : data.getMacroScore() > 40 ? "NEUTRAL" : "NEGATIVE");
         data.setSectorTailwinds(computeUSTailwinds(data));
         data.setSectorHeadwinds(computeUSHeadwinds(data));
-        data.setGeopoliticalRiskScore(5.0);    // Medium geopolitical risk as of 2026
-        data.setGeopoliticalRiskLabel("ELEVATED");
+        Double usRisk = fetchGdeltRiskScore("US");
+        double usRiskScore = usRisk != null ? usRisk : 5.0;   // Phase-1 fallback if GDELT unreachable
+        data.setGeopoliticalRiskScore(usRiskScore);
+        data.setGeopoliticalRiskLabel(labelForRiskScore(usRiskScore));
         return data;
     }
 
     // ─── India Macro ──────────────────────────────────────────────────────────
 
     private MacroData buildIndiaMacroData() {
-        // Phase-1: Use current known India macro values
-        // Phase-2: Fetch from RBI website + NSE FII/DII data
-        MacroData data = MacroData.builder()
+        // RBI repo rate / CPI / GDP: Phase-1 fallback values (no public free RBI REST API
+        // found during Phase 0 — see class javadoc). FII/DII flow below is real, live NSE data.
+        MacroData.MacroDataBuilder builder = MacroData.builder()
                 .market(Market.INDIA_NSE)
-                .interestRate(6.50)             // RBI Repo Rate
+                .interestRate(6.50)             // RBI Repo Rate (Phase-1 fallback)
                 .cpiInflationRate(5.1)
-                .gdpGrowthRateYoY(7.2)         // India GDP (strong growth)
-                .vixLevel(13.8)                 // India VIX (calm market)
+                .gdpGrowthRateYoY(7.2)
+                .vixLevel(13.8)                 // India VIX (Phase-1 fallback)
                 .vixSentiment("NEUTRAL")
                 .usdInrRate(83.8)
-                .usdInrTrend(-0.3)             // INR slightly strengthening
-                .fiiFlowTrend("BUYING")
-                .consecutiveFiiBuyDays(5)
-                .interestRateOutlook("CUT")    // RBI easing cycle
+                .usdInrTrend(-0.3)
+                .interestRateOutlook("CUT")
                 .inflationTrend("FALLING")
-                .lastUpdated(LocalDateTime.now())
-                .dataSource("RBI, NSE, SEBI")
-                .build();
+                .lastUpdated(LocalDateTime.now());
 
+        Map<String, BigDecimal> flows = fetchNseFiiDiiFlows();
+        if (flows != null && (flows.get("FII") != null || flows.get("DII") != null)) {
+            BigDecimal fii = flows.get("FII");
+            builder.fiiNetFlowCrores(fii)
+                   .diiNetFlowCrores(flows.get("DII"))
+                   .fiiFlowTrend(fii != null && fii.signum() > 0 ? "BUYING"
+                               : fii != null && fii.signum() < 0 ? "SELLING" : "NEUTRAL")
+                   .dataSource("NSE (live FII/DII), Phase-1 fallback (repo rate/CPI/GDP)");
+        } else {
+            builder.fiiFlowTrend("BUYING")
+                   .consecutiveFiiBuyDays(5)
+                   .dataSource("Phase-1 fallback — NSE FII/DII fetch unavailable this pass");
+        }
+
+        MacroData data = builder.build();
         data.setMacroScore(computeIndiaMacroScore(data));
         data.setMacroSentiment(data.getMacroScore() > 60 ? "POSITIVE" : "NEUTRAL");
         data.setSectorTailwinds(computeIndiaTailwinds(data));
         data.setSectorHeadwinds(computeIndiaHeadwinds(data));
-        data.setGeopoliticalRiskScore(4.0);
-        data.setGeopoliticalRiskLabel("LOW_ELEVATED");
+        Double inRisk = fetchGdeltRiskScore("IN");
+        double inRiskScore = inRisk != null ? inRisk : 4.0;   // Phase-1 fallback if GDELT unreachable
+        data.setGeopoliticalRiskScore(inRiskScore);
+        data.setGeopoliticalRiskLabel(labelForRiskScore(inRiskScore));
         data.setMajorUpcomingEvents("RBI MPC Meeting, Union Budget, Q1 Results Season");
         return data;
+    }
+
+    // ─── NSE FII/DII (real, verified endpoint) ─────────────────────────────────
+
+    @CircuitBreaker(name = "nseFiiDii")
+    private Map<String, BigDecimal> fetchNseFiiDiiFlows() {
+        if (!rbiNseEnabled) return null;
+        try {
+            String url = nseBaseUrlForMacro + "/fiidiiTradeReact";
+            Request request = new Request.Builder()
+                    .url(url)
+                    .header("User-Agent", nseUserAgent)
+                    .header("Accept", "application/json, text/plain, */*")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .header("Referer", "https://www.nseindia.com/")
+                    .header("Connection", "keep-alive")
+                    .get().build();
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) return null;
+                JsonNode root = objectMapper.readTree(response.body().string());
+                if (!root.isArray()) return null;
+                Map<String, BigDecimal> result = new HashMap<>();
+                for (JsonNode row : root) {
+                    String category = row.path("category").asText("");
+                    String netValue = row.path("netValue").asText(null);
+                    if (netValue == null) continue;
+                    try {
+                        BigDecimal net = new BigDecimal(netValue);
+                        if ("DII".equalsIgnoreCase(category)) result.put("DII", net);
+                        else if (category.toUpperCase().contains("FII")) result.put("FII", net);
+                    } catch (NumberFormatException ignored) { /* skip malformed row */ }
+                }
+                return result.isEmpty() ? null : result;
+            }
+        } catch (Exception e) {
+            log.warn("[Macro] NSE FII/DII fetch failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    // ─── GDELT geopolitical risk (query shape per GDELT DOC 2.0 API docs — NOTE: this
+    // specific host could not be reached from the Phase 0 development sandbox, connection
+    // timed out at the TCP level despite general outbound internet working fine and
+    // www.gdeltproject.org [non-API subdomain] resolving/responding normally. Implemented
+    // against GDELT's documented tonechart response shape but UNVERIFIED end-to-end — confirm
+    // reachability from the actual deploy environment before trusting this. Fails closed to
+    // the existing Phase-1 hardcoded value either way.) ─────────────────────────
+
+    @CircuitBreaker(name = "gdelt")
+    private Double fetchGdeltRiskScore(String countryCode) {
+        if (!gdeltEnabled) return null;
+        try {
+            String query = String.format("sourcecountry:%s (war OR sanctions OR tariff OR conflict OR crisis)",
+                    countryCode);
+            String url = String.format("%s/doc/doc?query=%s&mode=tonechart&format=json&timespan=7days",
+                    gdeltBaseUrl, URLEncoder.encode(query, StandardCharsets.UTF_8));
+            Request request = new Request.Builder().url(url).get().build();
+            try (Response response = httpClient.newCall(request).execute()) {
+                if (!response.isSuccessful() || response.body() == null) return null;
+                JsonNode root = objectMapper.readTree(response.body().string());
+                JsonNode bins = root.path("tonechart");
+                if (!bins.isArray() || bins.isEmpty()) return null;
+
+                double weightedToneSum = 0;
+                long totalCount = 0;
+                for (JsonNode bin : bins) {
+                    double toneBin = bin.path("bin").asDouble(0);
+                    long count = bin.path("count").asLong(0);
+                    weightedToneSum += toneBin * count;
+                    totalCount += count;
+                }
+                if (totalCount == 0) return null;
+                double avgTone = weightedToneSum / totalCount;   // GDELT tone is roughly -10..+10
+                // More negative tone => higher risk. Map onto the existing 0-10 scale
+                // (same direction/semantics as the Phase-1 hardcoded values it replaces).
+                return Math.max(0, Math.min(10, 5.0 - avgTone));
+            }
+        } catch (Exception e) {
+            log.warn("[Macro] GDELT fetch failed for {}: {}", countryCode, e.getMessage());
+            return null;
+        }
+    }
+
+    private String labelForRiskScore(double score) {
+        if (score >= 7.5) return "EXTREME";
+        if (score >= 5.5) return "HIGH";
+        if (score >= 3.5) return "ELEVATED";
+        return "LOW";
     }
 
     // ─── Macro Scoring ────────────────────────────────────────────────────────
@@ -233,10 +369,10 @@ public class MacroGeopoliticalService {
     // ─── FRED API Helper ──────────────────────────────────────────────────────
 
     private Double fetchFredLatestValue(String series) {
-        if (!fredEnabled || fredApiKey.isBlank()) return null;
+        if (!fredEnabled || resolveFredApiKey().isBlank()) return null;
         try {
             String url = String.format("%s/series/observations?series_id=%s&api_key=%s&file_type=json&limit=1&sort_order=desc",
-                    fredBaseUrl, series, fredApiKey);
+                    fredBaseUrl, series, resolveFredApiKey());
             Request request = new Request.Builder().url(url).get().build();
             try (Response response = httpClient.newCall(request).execute()) {
                 if (!response.isSuccessful() || response.body() == null) return null;

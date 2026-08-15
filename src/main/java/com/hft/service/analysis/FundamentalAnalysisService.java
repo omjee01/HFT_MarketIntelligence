@@ -126,8 +126,15 @@ public class FundamentalAnalysisService {
     // ─── India Fundamentals (Basic structure for NSE data) ───────────────────
 
     private Optional<FundamentalData> fetchIndiaFundamentals(String symbol, Market market) {
-        // Phase-1: Return structured placeholder with sector context
-        // Phase-2: Integrate Screener.in API or NSDL XML filings
+        // Checked during Phase 0 (real data sourcing): Screener.in's only usable JSON
+        // endpoint (/api/company/search/?q=) is explicitly disallowed by their robots.txt
+        // (`Disallow: /*?q=`); their ratio data otherwise lives only in server-rendered HTML
+        // pages, which would mean scraping rather than a real API — out of bounds per the
+        // project's no-ToS-violating-scraping rule (see HFT_ARCHITECTURE.md §24.2/§24.6).
+        // No other free/ToS-compliant India fundamentals API was found in this pass.
+        // Remains DB-only until either Screener.in offers a real public API, NSE/BSE XBRL
+        // filing parsing is built (nontrivial — separate scoped effort), or a paid vendor
+        // is budgeted.
         log.debug("[Fundamental] India fundamentals for {} - using cached/manual data", symbol);
         return fundRepo.findById(symbol);
     }
