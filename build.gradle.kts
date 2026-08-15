@@ -5,6 +5,7 @@ plugins {
 }
 
 group = "com.hft"
+
 version = "1.0.0"
 
 java {
@@ -24,6 +25,7 @@ extra["commonsMath3Version"] = "3.6.1"
 extra["commonsLang3Version"] = "3.14.0"
 extra["guavaVersion"] = "33.2.1-jre"
 extra["springdocVersion"] = "2.5.0"
+extra["graphqlExtendedScalarsVersion"] = "22.0"
 
 dependencies {
     // ─── Spring Boot Starters ──────────────────────────────────────────────────
@@ -70,6 +72,10 @@ dependencies {
     implementation("org.apache.commons:commons-math3:${property("commonsMath3Version")}")
     implementation("org.apache.commons:commons-lang3:${property("commonsLang3Version")}")
     implementation("com.google.guava:guava:${property("guavaVersion")}")
+
+    // ─── GraphQL ──────────────────────────────────────────────────────────────
+    implementation("org.springframework.boot:spring-boot-starter-graphql")
+    implementation("com.graphql-java:graphql-java-extended-scalars:${property("graphqlExtendedScalarsVersion")}")
 
     // ─── API Documentation ────────────────────────────────────────────────────
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:${property("springdocVersion")}")

@@ -1,0 +1,305 @@
+# ─── Scalars ──────────────────────────────────────────────────────────────────
+scalar BigDecimal
+scalar DateTime
+scalar Date
+scalar Long
+
+# ─── Enums ────────────────────────────────────────────────────────────────────
+enum Market {
+    US_NYSE
+    US_NASDAQ
+    US_AMEX
+    INDIA_NSE
+    INDIA_BSE
+    INDIA_MCX
+}
+
+enum AssetType {
+    STOCK
+    OPTION
+    COMMODITY
+    IPO
+    ETF
+}
+
+enum SignalType {
+    STRONG_BUY
+    BUY
+    HOLD
+    SELL
+    STRONG_SELL
+}
+
+enum RiskLevel {
+    VERY_LOW
+    LOW
+    MEDIUM
+    HIGH
+    VERY_HIGH
+}
+
+enum TrendDirection {
+    STRONG_UPTREND
+    UPTREND
+    SIDEWAYS
+    DOWNTREND
+    STRONG_DOWNTREND
+}
+
+enum SentimentLabel {
+    VERY_BULLISH
+    BULLISH
+    NEUTRAL
+    BEARISH
+    VERY_BEARISH
+}
+
+enum TimeHorizon {
+    INTRADAY
+    SHORT_TERM
+    MEDIUM_TERM
+    LONG_TERM
+}
+
+# ─── Core Types ───────────────────────────────────────────────────────────────
+type StockQuote {
+    symbol:               String!
+    companyName:          String
+    market:               Market!
+    assetType:            AssetType
+    currentPrice:         BigDecimal!
+    openPrice:            BigDecimal
+    highPrice:            BigDecimal
+    lowPrice:             BigDecimal
+    previousClose:        BigDecimal
+    dayChange:            BigDecimal
+    dayChangePercent:     BigDecimal
+    volume:               Long
+    avgVolume20Day:       Long
+    marketCap:            BigDecimal
+    currency:             String
+    fiftyTwoWeekHigh:     BigDecimal
+    fiftyTwoWeekLow:      BigDecimal
+    percentFrom52WeekHigh: BigDecimal
+    percentFrom52WeekLow:  BigDecimal
+    sector:               String
+    industry:             String
+    peRatio:              BigDecimal
+    dividendYield:        BigDecimal
+    beta:                 BigDecimal
+    isMarketOpen:         Boolean
+    dataSource:           String
+    timestamp:            DateTime
+}
+
+type TechnicalIndicators {
+    symbol:               String!
+    intervalType:         String
+    # Moving averages
+    sma20:                Float
+    sma50:                Float
+    sma200:               Float
+    ema9:                 Float
+    ema21:                Float
+    ema55:                Float
+    # Momentum
+    rsi14:                Float
+    macdLine:             Float
+    macdSignal:           Float
+    macdHistogram:        Float
+    macdBullishCrossover: Boolean
+    stochasticK:          Float
+    stochasticD:          Float
+    williamsR:            Float
+    # Volatility
+    bollingerUpper:       Float
+    bollingerMiddle:      Float
+    bollingerLower:       Float
+    bollingerBandWidth:   Float
+    bollingerBreakoutUp:  Boolean
+    bollingerBreakoutDown: Boolean
+    atr14:                Float
+    historicalVolatility20: Float
+    # Volume
+    obv:                  Long
+    vwap:                 Float
+    volumeRatio:          Float
+    obvTrendingUp:        Boolean
+    # Support & Resistance
+    supportLevel:         Float
+    resistanceLevel:      Float
+    fibonacci236:         Float
+    fibonacci382:         Float
+    fibonacci500:         Float
+    fibonacci618:         Float
+    # Composite
+    technicalScore:       Float
+    trendDirection:       TrendDirection
+    detectedPatterns:     [String]
+    computedAt:           DateTime
+}
+
+type SentimentData {
+    symbol:                  String!
+    market:                  Market
+    overallSentimentScore:   Float
+    newsSentimentScore:      Float
+    socialSentimentScore:    Float
+    sentimentLabel:          SentimentLabel
+    totalMentions24h:        Int
+    newsArticles24h:         Int
+    mentionTrend:            String
+    isTrending:              Boolean
+    positiveNewsCount:       Int
+    negativeNewsCount:       Int
+    neutralNewsCount:        Int
+    keyHeadlines:            [String]
+    hasFedMention:           Boolean
+    hasRbiMention:           Boolean
+    hasPoliticalRisk:        Boolean
+    computedAt:              DateTime
+}
+
+type FundamentalData {
+    symbol:               String!
+    companyName:          String
+    market:               Market
+    sector:               String
+    industry:             String
+    # Valuation
+    peRatio:              Float
+    pbRatio:              Float
+    psRatio:              Float
+    evToEbitda:           Float
+    # Earnings
+    epsCurrentYear:       Float
+    epsGrowthYoY:         Float
+    # Profitability
+    grossProfitMargin:    Float
+    operatingMargin:      Float
+    netProfitMargin:      Float
+    roe:                  Float
+    roa:                  Float
+    # Health
+    debtToEquity:         Float
+    currentRatio:         Float
+    # Dividends
+    dividendYield:        Float
+    # Risk
+    beta:                 Float
+    # Score
+    fundamentalScore:     Float
+    valuationStatus:      String
+    lastUpdated:          Date
+}
+
+type MacroData {
+    market:               Market!
+    # Interest rates
+    centralBankRate:      Float
+    tenYearYield:         Float
+    # Inflation
+    inflationRate:        Float
+    # Growth
+    gdpGrowthRate:        Float
+    # Market index
+    indexLevel:           Float
+    indexChangePercent:   Float
+    # Sentiment
+    fearGreedIndex:       Float
+    vixLevel:             Float
+    # Composite
+    macroScore:           Float
+    macroOutlook:         String
+    computedAt:           DateTime
+}
+
+type TradeRecommendation {
+    id:                   String
+    symbol:               String!
+    companyName:          String
+    market:               Market!
+    assetType:            AssetType
+    signal:               SignalType!
+    timeHorizon:          TimeHorizon
+    riskLevel:            RiskLevel
+    currentPrice:         BigDecimal!
+    entryPrice:           BigDecimal
+    targetPrice:          BigDecimal
+    stopLossPrice:        BigDecimal
+    expectedProfitPercent: Float
+    expectedLossPercent:  Float
+    riskRewardRatio:      Float
+    confidenceScore:      Float
+    compositeScore:       Float
+    technicalScore:       Float
+    fundamentalScore:     Float
+    sentimentScore:       Float
+    macroScore:           Float
+    entryDate:            Date
+    targetExitDate:       Date
+    reasons:              [String]
+    keyRisks:             [String]
+    dataSources:          [String]
+    isActive:             Boolean
+    generatedAt:          DateTime
+}
+
+# ─── Input Types ──────────────────────────────────────────────────────────────
+input ScreenerInput {
+    market:            Market!
+    minConfidence:     Float
+    signals:           [SignalType]
+    maxRiskLevel:      RiskLevel
+    minTechnicalScore: Float
+    minFundamentalScore: Float
+    sectors:           [String]
+    limit:             Int
+}
+
+input WatchlistInput {
+    symbols: [String!]!
+    market:  Market!
+}
+
+# ─── Queries ──────────────────────────────────────────────────────────────────
+type Query {
+    # Market Data
+    quote(symbol: String!, market: Market!): StockQuote
+    quotes(input: WatchlistInput!): [StockQuote!]!
+
+    # Analysis
+    technicalAnalysis(symbol: String!, market: Market!): TechnicalIndicators
+    sentiment(symbol: String!, market: Market!): SentimentData
+    fundamentals(symbol: String!, market: Market!): FundamentalData
+    macro(market: Market!): MacroData
+
+    # Recommendations
+    recommendation(symbol: String!, market: Market!): TradeRecommendation
+    screenStocks(input: ScreenerInput!): [TradeRecommendation!]!
+    activeRecommendations(market: Market): [TradeRecommendation!]!
+
+    # Composite dashboard query (the key GraphQL advantage — 1 call instead of 4)
+    stockDashboard(symbol: String!, market: Market!): StockDashboard
+}
+
+# Composite type: everything for one stock in one query
+type StockDashboard {
+    quote:      StockQuote
+    technical:  TechnicalIndicators
+    sentiment:  SentimentData
+    fundamentals: FundamentalData
+    recommendation: TradeRecommendation
+}
+
+# ─── Subscriptions ────────────────────────────────────────────────────────────
+type Subscription {
+    # Live quote updates (pushed from Kafka market-data-raw topic)
+    liveQuote(symbol: String!, market: Market!): StockQuote!
+
+    # Live trading signals (pushed from Kafka trading-signals topic)
+    liveSignals(market: Market): TradeRecommendation!
+
+    # Live signals filtered to a watchlist
+    watchlistSignals(input: WatchlistInput!): TradeRecommendation!
+}

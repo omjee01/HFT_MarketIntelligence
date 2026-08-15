@@ -27,6 +27,18 @@ spring:
   cache:
     type: simple        # 'redis' in prod, 'simple' for dev without Redis
 
+  # ─── GraphQL ─────────────────────────────────────────────────────────────────
+  graphql:
+    graphiql:
+      enabled: true
+      path: /graphiql
+    websocket:
+      path: /graphql-ws          # Subscription endpoint
+    schema:
+      printer:
+        enabled: true            # GET /graphql/schema prints the SDL
+    path: /graphql
+
 # ─── Server ─────────────────────────────────────────────────────────────────
 server:
   port: 8080

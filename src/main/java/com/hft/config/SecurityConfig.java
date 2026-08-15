@@ -30,7 +30,13 @@ public class SecurityConfig {
             "/api/v1/recommendations/**",  // recommendations are publicly readable
             "/api/v1/analysis/**",
             "/api/v1/ipo/**",
-            "/ws/**"                       // WebSocket connections
+            "/ws/**",                      // WebSocket connections (STOMP)
+            "/graphql",                    // GraphQL endpoint
+            "/graphql/**",
+            "/graphiql",                   // GraphiQL browser IDE
+            "/graphiql/**",
+            "/graphql-ws",                 // GraphQL subscription WebSocket
+            "/graphql-ws/**"
     };
 
     @Bean
