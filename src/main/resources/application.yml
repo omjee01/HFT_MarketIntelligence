@@ -92,6 +92,21 @@ hft:
   # Stage 4 — Redis Pub/Sub fan-out (disabled in dev, enabled in prod)
   redis-pubsub:
     enabled: false
+
+  # Stage 6 — Backtesting
+  backtest:
+    interval-type: 1D              # OHLCV bar interval to use for simulation
+    kafka-capture:
+      enabled: false               # capture signals-ml-scored → backtest-results topic
+
+  # Stage 5 — ML A/B model routing
+  ml:
+    model-router:
+      model-b-fraction: 0.10       # 10% of symbols route to Model B (EnsembleModel)
+    ensemble:
+      momentum-weight: 0.33
+      reversion-weight: 0.33
+      trend-weight: 0.34
   # API Keys — set real keys in application-dev.yml or environment variables
   alpha-vantage:
     api-key: ${ALPHA_VANTAGE_API_KEY:demo}

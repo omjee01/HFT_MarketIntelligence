@@ -2,12 +2,14 @@ package com.hft.service.signal;
 
 import com.hft.model.domain.*;
 import com.hft.model.enums.*;
+import com.hft.ml.ModelABRouter;
 import com.hft.service.analysis.*;
 import com.hft.service.data.MarketDataAggregatorService;
 import com.hft.service.ml.MLPredictionService;
 import com.hft.service.risk.RiskManagementService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -46,6 +48,10 @@ public class RecommendationEngine {
     private final MacroGeopoliticalService    macroService;
     private final MLPredictionService         mlService;
     private final RiskManagementService       riskService;
+
+    /** Null when Stage 5 is not on classpath or disabled. Falls back to mlService.predict(). */
+    @Autowired(required = false)
+    private ModelABRouter mlRouter;
 
     @Value("${hft.recommendation.min-confidence-for-buy:65.0}")
     private double minConfidenceForBuy;
@@ -88,10 +94,11 @@ public class RecommendationEngine {
             // ─── Step 5: Macro ────────────────────────────────────────────────
             MacroData macro = macroService.getMacroData(market);
 
-            // ─── Step 6: ML Prediction ────────────────────────────────────────
+            // ─── Step 6: ML Prediction (A/B router when Stage 5 active) ─────
             List<OHLCVData> recentBars = marketData.getRecentHistory(symbol, market, 60);
-            MLPredictionService.MLPrediction prediction = mlService.predict(
-                    symbol, market, currentPrice, ta, fd, sentiment, macro, recentBars);
+            MLPredictionService.MLPrediction prediction = mlRouter != null
+                    ? mlRouter.route(symbol, market, currentPrice, quote, ta, fd, sentiment, macro, recentBars)
+                    : mlService.predict(symbol, market, currentPrice, ta, fd, sentiment, macro, recentBars);
 
             // ─── Step 7: Liquidity Filter ─────────────────────────────────────
             if (quote.getAvgVolume20Day() != null && quote.getAvgVolume20Day() < minAvgVolume) {

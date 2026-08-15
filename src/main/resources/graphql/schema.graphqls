@@ -262,6 +262,87 @@ input WatchlistInput {
     market:  Market!
 }
 
+# ─── Backtest Types (Stage 6) ────────────────────────────────────────────────
+input BacktestInput {
+    symbols:            [String!]!
+    market:             Market!
+    fromDate:           Date!
+    toDate:             Date!
+    modelVariant:       String          # "A" or "B" (default "A")
+    initialCapital:     BigDecimal      # virtual starting capital (default 100000)
+    minConfidence:      Float           # minimum confidence % to act on signal (default 60)
+    maxHoldingDays:     Int             # cut trade if target/stop not hit (default 45)
+    walkForward:        Boolean
+    walkForwardWindows: Int             # number of rolling windows (default 5)
+}
+
+type BacktestMetrics {
+    totalReturnPct:      Float
+    annualizedReturnPct: Float
+    sharpeRatio:         Float
+    maxDrawdownPct:      Float
+    winRatePct:          Float
+    avgWinPct:           Float
+    avgLossPct:          Float
+    profitFactor:        Float
+    expectancy:          Float
+    totalTrades:         Int
+    winningTrades:       Int
+    losingTrades:        Int
+    avgHoldingDays:      Int
+}
+
+type BacktestTrade {
+    symbol:            String
+    signal:            SignalType
+    entryDate:         Date
+    entryPrice:        BigDecimal
+    exitDate:          Date
+    exitPrice:         BigDecimal
+    exitReason:        String      # TARGET_HIT | STOP_HIT | TIME_EXPIRY
+    returnPercent:     Float
+    profitable:        Boolean
+    holdingDays:       Int
+    compositeScore:    Float
+    confidencePercent: Float
+    targetPrice:       BigDecimal
+    stopLossPrice:     BigDecimal
+}
+
+type BacktestRun {
+    id:                 String
+    symbols:            [String!]!
+    market:             Market!
+    fromDate:           Date!
+    toDate:             Date!
+    modelVariant:       String
+    initialCapital:     BigDecimal
+    status:             String!        # PENDING | RUNNING | COMPLETE | FAILED
+    progressPercent:    Int
+    totalTrades:        Int
+    metrics:            BacktestMetrics
+    trades:             [BacktestTrade!]!
+    startedAt:          DateTime
+    completedAt:        DateTime
+    failureReason:      String
+}
+
+type WalkForwardResult {
+    windowIndex: Int
+    fromDate:    Date
+    toDate:      Date
+    metrics:     BacktestMetrics
+}
+
+# ─── ML Performance Types (Stage 5) ──────────────────────────────────────────
+type ModelPerformance {
+    model:              String!
+    totalPredictions:   Int!
+    correctPredictions: Int!
+    hitRatePct:         Float!
+    avgReturnPct:       Float!
+}
+
 # ─── Queries ──────────────────────────────────────────────────────────────────
 type Query {
     # Market Data
@@ -281,6 +362,30 @@ type Query {
 
     # Composite dashboard query (the key GraphQL advantage — 1 call instead of 4)
     stockDashboard(symbol: String!, market: Market!): StockDashboard
+
+    # Stage 5 — ML model observability
+    modelPerformance(model: String!): ModelPerformance
+    modelAssignment(symbol: String!): String
+
+    # Stage 6 — Backtesting
+    backtestRun(runId: String!): BacktestRun
+    listBacktestRuns(market: Market): [BacktestRun!]!
+    walkForwardValidation(input: BacktestInput!, windows: Int): [WalkForwardResult!]!
+}
+
+# ─── Mutations (Stage 5) ──────────────────────────────────────────────────────
+type Mutation {
+    # Stage 5 — Record the actual market outcome for a prior signal
+    recordSignalOutcome(
+        symbol:             String!
+        market:             Market!
+        model:              String!
+        actualReturnPercent: Float!
+        wasBullishCall:     Boolean!
+    ): ModelPerformance!
+
+    # Stage 6 — Launch an async backtest (subscribe to backtestProgress for updates)
+    runBacktest(input: BacktestInput!): BacktestRun!
 }
 
 # Composite type: everything for one stock in one query
@@ -302,4 +407,7 @@ type Subscription {
 
     # Live signals filtered to a watchlist
     watchlistSignals(input: WatchlistInput!): TradeRecommendation!
+
+    # Stage 6 — Live backtest progress (completes when status=COMPLETE|FAILED)
+    backtestProgress(runId: String!): BacktestRun!
 }

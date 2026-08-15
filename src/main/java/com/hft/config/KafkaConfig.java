@@ -27,9 +27,11 @@ public class KafkaConfig {
     public static final String TOPIC_SOCIAL_RAW        = "social-raw";
 
     // ─── Kafka Streams output topics ─────────────────────────────────────────
-    public static final String TOPIC_QUOTES_AGGREGATED = "quotes-aggregated";  // latest quote per symbol
-    public static final String TOPIC_CANDLES_1M        = "candles-1m";         // 1-min OHLCV candles
-    public static final String TOPIC_SIGNALS_ENRICHED  = "signals-enriched";   // signals joined with live quote
+    public static final String TOPIC_QUOTES_AGGREGATED   = "quotes-aggregated";  // latest quote per symbol
+    public static final String TOPIC_CANDLES_1M          = "candles-1m";         // 1-min OHLCV candles
+    public static final String TOPIC_SIGNALS_ENRICHED    = "signals-enriched";   // signals joined with live quote
+    public static final String TOPIC_SIGNALS_ML_SCORED   = "signals-ml-scored";  // Stage 5: Ensemble-rescored signals
+    public static final String TOPIC_BACKTEST_RESULTS    = "backtest-results";   // Stage 6: Signal capture for outcome tracking
 
     @Bean
     public NewTopic marketDataRawTopic() {
@@ -134,6 +136,22 @@ public class KafkaConfig {
     public NewTopic signalsEnrichedTopic() {
         return TopicBuilder.name(TOPIC_SIGNALS_ENRICHED)
                 .partitions(16)
+                .replicas(1)
+                .build();
+    }
+
+    @Bean
+    public NewTopic signalsMlScoredTopic() {
+        return TopicBuilder.name(TOPIC_SIGNALS_ML_SCORED)
+                .partitions(16)
+                .replicas(1)
+                .build();
+    }
+
+    @Bean
+    public NewTopic backtestResultsTopic() {
+        return TopicBuilder.name(TOPIC_BACKTEST_RESULTS)
+                .partitions(8)
                 .replicas(1)
                 .build();
     }
