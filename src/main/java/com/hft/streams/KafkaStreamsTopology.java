@@ -19,6 +19,7 @@ import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.kstream.*;
 import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.WindowStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -32,24 +33,32 @@ import java.time.ZoneOffset;
  * Three logical pipelines:
  *
  *  1. Quote KTable  — market-data-raw → groupByKey → reduce(latest) → quotes-aggregated
- *                     Side-effect: push each tick to StreamSinkBridge.emitQuote()
+ *                     Side-effect: push each tick to sink bridge
  *
  *  2. Candle Builder — market-data-raw → groupByKey → windowedBy(1 min) → aggregate(OHLCV)
  *                      → candles-1m
- *                      Side-effect: push completed candles to StreamSinkBridge.emitCandle()
+ *                      Side-effect: push completed candles to sink bridge
  *
  *  3. Signal Enricher — trading-signals → selectKey(symbol) → leftJoin(quoteKTable)
  *                        → signals-enriched
- *                        Side-effect: push enriched signals to StreamSinkBridge.emitSignal()
+ *                        Side-effect: push enriched signals to sink bridge
+ *
+ * Stage 4: when RedisPubSubBridge is active (multi-node), events are published to Redis
+ * rather than written to the local StreamSinkBridge directly. The bridge's Redis subscriber
+ * propagates them to ALL nodes (including this one) via sinkBridge.emitXxx().
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class KafkaStreamsTopology {
 
-    private final StreamsBuilder  builder;
+    private final StreamsBuilder   builder;
     private final StreamSinkBridge sinkBridge;
-    private final ObjectMapper    mapper;
+    private final ObjectMapper     mapper;
+
+    /** Null when hft.redis-pubsub.enabled=false (dev/single-node). */
+    @Autowired(required = false)
+    private RedisPubSubBridge redisBridge;
 
     @PostConstruct
     public void buildTopology() {
@@ -66,7 +75,7 @@ public class KafkaStreamsTopology {
                 .mapValues(json -> fromJson(json, StockQuote.class))
                 .filter((k, v) -> v != null && v.getSymbol() != null)
                 .selectKey((k, v) -> v.getSymbol())
-                .peek((symbol, quote) -> sinkBridge.emitQuote(quote));
+                .peek((symbol, quote) -> emitQuote(quote));
 
         // ─── 2. KTable — latest quote per symbol (used for signal join) ──────────
         KTable<String, StockQuote> latestQuotes = quoteStream
@@ -94,7 +103,7 @@ public class KafkaStreamsTopology {
                                 .withKeySerde(Serdes.String())
                                 .withValueSerde(candleSerde))
                 .toStream()
-                .peek((wk, candle) -> sinkBridge.emitCandle(candle))
+                .peek((wk, candle) -> emitCandle(candle))
                 .map((wk, candle) -> KeyValue.pair(wk.key(), toJson(candle)))
                 .filter((k, v) -> v != null)
                 .to(KafkaConfig.TOPIC_CANDLES_1M, Produced.with(Serdes.String(), Serdes.String()));
@@ -112,12 +121,29 @@ public class KafkaStreamsTopology {
                         latestQuotes,
                         this::enrichSignal,
                         Joined.with(Serdes.String(), signalSerde, quoteSerde))
-                .peek((symbol, signal) -> sinkBridge.emitSignal(signal))
+                .peek((symbol, signal) -> emitSignal(signal))
                 .mapValues(s -> toJson(s))
                 .filter((k, v) -> v != null)
                 .to(KafkaConfig.TOPIC_SIGNALS_ENRICHED, Produced.with(Serdes.String(), Serdes.String()));
 
         log.info("[KafkaStreams] Topology registered: QuoteKTable + CandleBuilder + SignalEnricher");
+    }
+
+    // ─── Emit helpers — routes via Redis when multi-node, local otherwise ─────
+
+    private void emitQuote(StockQuote quote) {
+        if (redisBridge != null) redisBridge.publishQuote(quote);
+        else sinkBridge.emitQuote(quote);
+    }
+
+    private void emitSignal(TradeRecommendation signal) {
+        if (redisBridge != null) redisBridge.publishSignal(signal);
+        else sinkBridge.emitSignal(signal);
+    }
+
+    private void emitCandle(OHLCVData candle) {
+        if (redisBridge != null) redisBridge.publishCandle(candle);
+        else sinkBridge.emitCandle(candle);
     }
 
     // ─── OHLCV Candle Builder ─────────────────────────────────────────────────

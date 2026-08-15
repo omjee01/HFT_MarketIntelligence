@@ -91,6 +91,9 @@ dependencies {
     implementation("io.grpc:grpc-stub:${property("grpcVersion")}")
     compileOnly("org.apache.tomcat:annotations-api:6.0.53")
 
+    // ─── Metrics / Observability (Stage 4) ───────────────────────────────────
+    runtimeOnly("io.micrometer:micrometer-registry-prometheus")   // /actuator/prometheus scrape endpoint
+
     // ─── API Documentation ────────────────────────────────────────────────────
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:${property("springdocVersion")}")
 

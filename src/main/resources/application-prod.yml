@@ -1,0 +1,141 @@
+# ─── PRODUCTION PROFILE ──────────────────────────────────────────────────────
+# All secrets MUST be supplied via environment variables or a secrets manager.
+# Never hardcode credentials here. Add this file to .gitignore if it contains
+# any non-default values.
+
+spring:
+  # ─── Database ───────────────────────────────────────────────────────────────
+  datasource:
+    url:      ${DATABASE_URL}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+
+  jpa:
+    hibernate:
+      ddl-auto: validate   # never auto-create tables in prod
+    show-sql: false
+
+  # ─── Redis ──────────────────────────────────────────────────────────────────
+  data:
+    redis:
+      host:     ${REDIS_HOST:localhost}
+      port:     ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_SSL:true}
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+          min-idle: 2
+
+  cache:
+    type: redis
+    redis:
+      time-to-live: 300000    # 5-min default TTL
+
+  # ─── Kafka ──────────────────────────────────────────────────────────────────
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    properties:
+      security.protocol:        ${KAFKA_SECURITY_PROTOCOL:SSL}
+      ssl.truststore.location:  ${KAFKA_SSL_TRUSTSTORE:}
+      ssl.truststore.password:  ${KAFKA_SSL_TRUSTSTORE_PASSWORD:}
+      ssl.keystore.location:    ${KAFKA_SSL_KEYSTORE:}
+      ssl.keystore.password:    ${KAFKA_SSL_KEYSTORE_PASSWORD:}
+    streams:
+      auto-startup: true
+      properties:
+        # Exactly-Once Semantics — guarantees no duplicate or lost records
+        processing.guarantee: exactly_once_v2
+        replication.factor: 3
+        min.insync.replicas: 2
+        num.stream.threads: 4
+        commit.interval.ms: 100
+        cache.max.bytes.buffering: 0
+
+# ─── gRPC ────────────────────────────────────────────────────────────────────
+grpc:
+  server:
+    port: 9090
+    auth:
+      enabled: true    # JWT required on all gRPC calls in production
+    tls:
+      enabled: true
+      cert-file: ${GRPC_TLS_CERT_FILE:/etc/ssl/grpc/tls.crt}
+      key-file:  ${GRPC_TLS_KEY_FILE:/etc/ssl/grpc/tls.key}
+
+# ─── HFT Platform ────────────────────────────────────────────────────────────
+hft:
+  redis-pubsub:
+    enabled: true     # Redis Pub/Sub fan-out for multi-node subscriptions
+
+  graphql:
+    max-query-depth:       10
+    max-query-complexity: 200
+
+  alpha-vantage:
+    api-key: ${ALPHA_VANTAGE_API_KEY}
+    rate-limit-per-minute: 75   # Premium tier
+
+  newsapi:
+    api-key: ${NEWSAPI_API_KEY}
+    enabled: true
+
+  twitter:
+    bearer-token: ${TWITTER_BEARER_TOKEN}
+    enabled: true
+
+  reddit:
+    client-id:     ${REDDIT_CLIENT_ID}
+    client-secret: ${REDDIT_CLIENT_SECRET}
+    enabled: true
+
+  fred:
+    api-key: ${FRED_API_KEY}
+    enabled: true
+
+  jwt:
+    secret: ${JWT_SECRET}          # MUST be at least 256-bit random key
+    expiration-ms: 900000          # 15 min
+    refresh-expiration-ms: 604800000
+
+  scheduler:
+    market-data-poll-ms: 500      # live polling at 500ms
+
+# ─── Actuator / Prometheus ───────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: hft-market-intelligence
+      environment: production
+  health:
+    redis:
+      enabled: true
+    kafka:
+      enabled: true
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  level:
+    com.hft: INFO
+    org.springframework.web: WARN
+    org.hibernate.SQL: ERROR
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

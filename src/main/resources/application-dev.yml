@@ -67,6 +67,10 @@ hft:
 grpc:
   server:
     port: 9090          # gRPC API port (HTTP stays on 8080)
+    auth:
+      enabled: false    # JWT auth disabled in dev — no token needed for grpcurl testing
+    tls:
+      enabled: false    # plaintext in dev; set cert/key files for prod
 
 management:
   health:

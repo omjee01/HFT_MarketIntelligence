@@ -84,6 +84,14 @@ springdoc:
 
 # ─── HFT Platform Configuration ──────────────────────────────────────────────
 hft:
+  # Stage 4 — GraphQL safety limits
+  graphql:
+    max-query-depth: 10       # reject queries nested deeper than 10 levels
+    max-query-complexity: 200 # reject queries whose field-count exceeds 200
+
+  # Stage 4 — Redis Pub/Sub fan-out (disabled in dev, enabled in prod)
+  redis-pubsub:
+    enabled: false
   # API Keys — set real keys in application-dev.yml or environment variables
   alpha-vantage:
     api-key: ${ALPHA_VANTAGE_API_KEY:demo}
