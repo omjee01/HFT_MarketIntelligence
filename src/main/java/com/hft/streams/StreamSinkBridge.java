@@ -1,5 +1,6 @@
 package com.hft.streams;
 
+import com.hft.backtest.BacktestRun;
 import com.hft.model.domain.OHLCVData;
 import com.hft.model.domain.StockQuote;
 import com.hft.model.domain.TradeRecommendation;
@@ -36,6 +37,10 @@ public class StreamSinkBridge {
     private final Sinks.Many<OHLCVData> candleSink =
             Sinks.many().multicast().onBackpressureBuffer(4096);
 
+    // ─── Backtest progress sink — one update per run per symbol processed ────
+    private final Sinks.Many<BacktestRun> backtestSink =
+            Sinks.many().multicast().onBackpressureBuffer(256);
+
     // ─── Emitters (called by Kafka Streams topology nodes) ───────────────────
 
     public void emitSignal(TradeRecommendation signal) {
@@ -66,6 +71,14 @@ public class StreamSinkBridge {
         }
     }
 
+    public void emitBacktestProgress(BacktestRun run) {
+        if (run == null) return;
+        Sinks.EmitResult result = backtestSink.tryEmitNext(run);
+        if (result.isFailure()) {
+            log.warn("[StreamSink] Backtest progress emit failed for run {}: {}", run.getId(), result);
+        }
+    }
+
     // ─── Flux accessors (consumed by GraphQL resolvers and gRPC services) ────
 
     /** Filtered signal stream — null market returns all signals. */
@@ -92,6 +105,12 @@ public class StreamSinkBridge {
     public Flux<OHLCVData> candleFlux(String symbol) {
         Flux<OHLCVData> flux = candleSink.asFlux();
         return symbol != null ? flux.filter(c -> symbol.equals(c.getSymbol())) : flux;
+    }
+
+    /** Backtest progress stream, filtered to one run ID. */
+    public Flux<BacktestRun> backtestFlux(String runId) {
+        return backtestSink.asFlux()
+                .filter(r -> runId == null || runId.equals(r.getId()));
     }
 
     private static String sinkKey(String symbol, Market market) {

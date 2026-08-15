@@ -13,7 +13,7 @@ data pipeline capability.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────┐
-│                    PLATFORM EVOLUTION — 3 STAGES                                 │
+│                    PLATFORM EVOLUTION — 6 STAGES                                 │
 │                                                                                  │
 │  FOUNDATION                                                                      │
 │  (Phase 1-4, REST)                                                               │
@@ -77,6 +77,45 @@ data pipeline capability.
 │  │    all secrets via env vars, Prometheus scrape enabled                    │   │
 │  │  + micrometer-registry-prometheus dependency added                        │   │
 │  └───────────────────────────────────────────────────────────────────────────┘   │
+│                │                                                                  │
+│                ▼                                                                  │
+│  STAGE 5: ML MODEL INTEGRATION & A/B TESTING                                      │
+│  ┌───────────────────────────────────────────────────────────────────────────┐   │
+│  │  + MLFeatureVector: 41-feature record (TA/FA/sentiment/macro/price)      │   │
+│  │  + MLFeatureExtractor: domain objects → MLFeatureVector (null-safe)      │   │
+│  │  + EnsembleModel (Model B): Momentum + MeanReversion + Trend             │   │
+│  │    regime-aware blending: bull→[0.50,0.15,0.35], bear→[0.20,0.40,0.40]  │   │
+│  │    confirmation bonus (+8 max) + conflict penalty (–12 max)              │   │
+│  │  + ModelABRouter: consistent-hash routing (symbol-stable, fraction-based)│   │
+│  │    hft.ml.model-router.model-b-fraction=0.10 (10% → Model B)            │   │
+│  │  + ModelPerformanceTracker: hit-rate + avg-return gauges, Redis TTL-90d  │   │
+│  │    Prometheus: hft_ml_hit_rate{model}, hft_ml_avg_return_pct{model}      │   │
+│  │  + KafkaStreams Processor 4: signals-enriched → mlRescore() →            │   │
+│  │    signals-ml-scored  (60% original + 40% ensemble blend)                │   │
+│  │  + GraphQL Mutation type: recordSignalOutcome() → feedback loop          │   │
+│  │  + GraphQL Queries: modelPerformance(), modelAssignment()                │   │
+│  │  + MLResolver: @QueryMapping + @MutationMapping                          │   │
+│  └───────────────────────────────────────────────────────────────────────────┘   │
+│                │                                                                  │
+│                ▼                                                                  │
+│  STAGE 6: BACKTESTING & STRATEGY VALIDATION ENGINE                                │
+│  ┌───────────────────────────────────────────────────────────────────────────┐   │
+│  │  + BacktestRunner (@Async): fetch OHLCV → inline TA → signal → trade sim  │   │
+│  │    inline TA: RSI-14, SMA20/50/200, EMA9, ATR-14, Bollinger Bands         │   │
+│  │    exitReason: TARGET_HIT | STOP_HIT | TIME_EXPIRY                        │   │
+│  │    20-bar warmup; one trade at a time per symbol; no external API calls   │   │
+│  │  + StrategyMetricsEngine: 12 metrics — Sharpe (annualised √252), CAGR,    │   │
+│  │    max drawdown, win rate, profit factor, expectancy, avgHoldingDays       │   │
+│  │  + WalkForwardValidator: N rolling windows, 80/20 warmup/test split        │   │
+│  │    prevents look-ahead bias; each window runs BacktestRunner.runSync()     │   │
+│  │  + BacktestRun (@Entity): PENDING→RUNNING→COMPLETE→FAILED lifecycle        │   │
+│  │  + BacktestTrade (@Entity): per-trade audit record with full OHLCV refs    │   │
+│  │  + OHLCVDataRepository: was missing; added for historical bar queries      │   │
+│  │  + GraphQL: runBacktest mutation (async, returns PENDING immediately)       │   │
+│  │    backtestProgress subscription (auto-completes on COMPLETE|FAILED)       │   │
+│  │    backtestRun, listBacktestRuns, walkForwardValidation queries            │   │
+│  │  + Kafka Processor 5: signals-ml-scored → backtest-results (conditional)  │   │
+│  └───────────────────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -111,9 +150,11 @@ data pipeline capability.
 │  Kafka (broker: localhost:9092) — from Stage 3                  │
 │  ├── Input:  market-data-raw  (64 partitions)                   │
 │  ├── Input:  trading-signals  (16 partitions)                   │
-│  ├── Output: quotes-aggregated (64 partitions)                  │
-│  ├── Output: candles-1m        (64 partitions, compact)         │
-│  └── Output: signals-enriched  (16 partitions)                  │
+│  ├── Output: quotes-aggregated  (64 partitions)                 │
+│  ├── Output: candles-1m         (64 partitions, compact)        │
+│  ├── Output: signals-enriched   (16 partitions)                 │
+│  ├── Output: signals-ml-scored  (16 partitions) ← Stage 5      │
+│  └── Output: backtest-results   (8 partitions)  ← Stage 6      │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -241,6 +282,91 @@ build.gradle.kts                                          (micrometer-registry-p
 
 ---
 
+### Stage 5 — ML Model Integration & A/B Testing
+
+| Before | After |
+|---|---|
+| Single ML model (weighted composite) | A/B tested: Model A vs Model B |
+| Static VIX weight adjustment | Dynamic 3-regime blend (bull/neutral/bear) |
+| 5 score inputs to ML | 41-feature MLFeatureVector |
+| 3 Kafka Streams processors | 4 + ML re-scoring pipeline |
+| 3 output topics | 4 incl. `signals-ml-scored` |
+| No model accuracy tracking | Hit rate + avg return via Micrometer |
+| Query + Subscription only | + GraphQL Mutation type added |
+| No routing observability | `modelAssignment(symbol)` query per symbol |
+| No feedback loop | `recordSignalOutcome` mutation |
+
+**New files added:**
+```
+src/main/java/com/hft/ml/
+  MLFeatureVector.java          (41-feature @Data @Builder record)
+  MLFeatureExtractor.java       (domain objects → feature vector, null-safe)
+  EnsembleModel.java            (Model B: Momentum + MeanReversion + Trend)
+  ModelABRouter.java            (consistent-hash A/B routing)
+  ModelPerformanceTracker.java  (Micrometer gauges + Redis TTL-90d)
+src/main/java/com/hft/graphql/
+  MLResolver.java               (@QueryMapping + @MutationMapping)
+docs/STAGE5_ML_PIPELINE.md
+```
+
+**Modified files:**
+```
+src/main/java/com/hft/streams/KafkaStreamsTopology.java   (Processor 4 + mlRescore)
+src/main/java/com/hft/service/signal/RecommendationEngine.java  (ModelABRouter injection)
+src/main/java/com/hft/config/KafkaConfig.java             (TOPIC_SIGNALS_ML_SCORED + @Bean)
+src/main/resources/graphql/schema.graphqls                (ModelPerformance + Mutation type)
+src/main/resources/application.yml                        (hft.ml config defaults)
+docs/STAGES_OVERVIEW.md                                   (this file)
+```
+
+---
+
+### Stage 6 — Backtesting & Strategy Validation Engine
+
+| Before | After |
+|---|---|
+| Signals validated only on live data | Historical simulation on OHLCV bars |
+| No trade-level outcome records | @Entity BacktestTrade with full audit trail |
+| Model A vs B compared live only | A/B on identical historical data |
+| Overfitting risk unmeasured | Walk-forward validation (N windows, 80/20 split) |
+| 5 performance metrics (hit rate, avg return) | +12 metrics incl. Sharpe, CAGR, drawdown |
+| GraphQL Subscription (3 types) | +backtestProgress (auto-completes on done) |
+| 4 Kafka Streams processors | 5 (backtest-capture, conditional) |
+| 12 JPA entities | 14 (+backtest_runs, +backtest_trades) |
+| OHLCVData entity, no repository | OHLCVDataRepository added |
+| Inline TA only in live pipeline | Inline TA engine in BacktestRunner |
+
+**New files added:**
+```
+src/main/java/com/hft/backtest/
+  BacktestConfig.java              (record — symbols, dates, model, thresholds)
+  BacktestRun.java                 (@Entity — lifecycle PENDING→RUNNING→COMPLETE→FAILED)
+  BacktestTrade.java               (@Entity — per-trade outcome with exitReason)
+  BacktestMetrics.java             (@Embeddable — 12 performance metrics)
+  BacktestRunRepository.java       (findByMarket, findTop20ByOrderByStartedAtDesc)
+  BacktestTradeRepository.java     (findByRunId, findByRunIdAndProfitable)
+  StrategyMetricsEngine.java       (Sharpe×√252, CAGR, max drawdown, profit factor)
+  WalkForwardValidator.java        (N windows, 80/20 split, runSync per window)
+  BacktestRunner.java              (@Async orchestrator, inline TA, Model A/B dispatch)
+src/main/java/com/hft/graphql/
+  BacktestResolver.java            (@MutationMapping runBacktest, @SubscriptionMapping backtestProgress)
+src/main/java/com/hft/repository/
+  OHLCVDataRepository.java         (was missing — findBySymbolAndMarket…BarDateBetween)
+docs/STAGE6_BACKTESTING.md
+```
+
+**Modified files:**
+```
+src/main/java/com/hft/streams/StreamSinkBridge.java        (emitBacktestProgress + backtestFlux)
+src/main/java/com/hft/streams/KafkaStreamsTopology.java    (Processor 5, conditional)
+src/main/java/com/hft/config/KafkaConfig.java              (TOPIC_BACKTEST_RESULTS + @Bean)
+src/main/resources/graphql/schema.graphqls                 (BacktestInput/Run/Trade/Metrics types)
+src/main/resources/application.yml                         (hft.backtest config block)
+docs/STAGES_OVERVIEW.md                                    (this file)
+```
+
+---
+
 ## 4. DEPENDENCY EVOLUTION (build.gradle.kts)
 
 ```
@@ -274,6 +400,14 @@ Stage 3 adds:
 Stage 4 adds:
   io.micrometer:micrometer-registry-prometheus  (runtimeOnly — Prometheus scrape endpoint)
   (all other Stage 4 features use existing dependencies: redis, grpc, graphql-java)
+
+Stage 5 adds:
+  (no new dependencies — uses commons-math3, micrometer-core, and spring-data-redis
+   already present from earlier stages)
+
+Stage 6 adds:
+  (no new dependencies — BacktestRunner computes TA inline from raw OHLCV using
+   pure Java math; no DJL, ND4J, or external ML inference library required)
 ```
 
 ---
@@ -308,6 +442,8 @@ Kafka Streams → StreamSinkBridge → gRPC streaming
 | Stage 1 | GraphQL | ~800 req/s (query batching) | UI/BFF, dashboards |
 | Stage 2 | gRPC | ~5,000 req/s (binary, HTTP/2) | Internal services, algo clients |
 | Stage 3 | Kafka Streams | 64 partitions × broker throughput | Real-time enrichment pipeline |
+| Stage 5 | ML Pipeline  | +<1ms overhead per signal          | A/B model accuracy testing    |
+| Stage 6 | Backtesting  | ~1-30s per symbol (OHLCV depth)    | Strategy validation, walk-forward |
 
 ### 5.3 Developer Experience by Stage
 
@@ -357,6 +493,8 @@ tests (they require live infrastructure). Integration tests are planned in a fut
 | Stage 2 | `294b8b4` | gRPC pipeline + proto schemas + ProtoMapper |
 | Stage 3 | `dfdff9a` | Kafka Streams topology + StreamSinkBridge |
 | Stage 4 | `adc400d` | Production hardening — Redis fan-out, gRPC TLS+auth, GraphQL limits, metrics |
+| Stage 5 | `a6c482a` | ML A/B routing — EnsembleModel, 41-feature vector, Processor 4, Mutation type |
+| Stage 6 | (pending) | Backtesting engine — BacktestRunner, StrategyMetrics, WalkForward, Processor 5 |
 
 ---
 
@@ -427,6 +565,8 @@ gRPC (Stage 2):
 | `docs/STAGE2_GRPC.md` | gRPC pipeline — proto contracts, grpcurl commands, port layout |
 | `docs/STAGE3_KAFKA_STREAMS.md` | Kafka Streams topology — processors, topics, run guide, outputs |
 | `docs/STAGE4_PRODUCTION_HARDENING.md` | Multi-node hardening — Redis fan-out, gRPC TLS/auth, GraphQL limits, metrics |
+| `docs/STAGE5_ML_PIPELINE.md` | ML pipeline — EnsembleModel, A/B routing, Processor 4, GraphQL Mutation, Prometheus |
+| `docs/STAGE6_BACKTESTING.md` | Backtesting engine — BacktestRunner algo, metrics reference, walk-forward, GraphQL guide |
 | `docs/STAGES_OVERVIEW.md` | This file — evolution summary, performance comparison |
 
 ---
@@ -434,21 +574,30 @@ gRPC (Stage 2):
 ## 11. WHAT COMES NEXT (Planned)
 
 ```
-STAGE 4 (COMPLETE — commit adc400d): Multi-Node Production Hardening
-  ├── Replace StreamSinkBridge with Redis Pub/Sub fan-out
-  │   (allows multiple app instances to share subscriptions)
-  ├── Add TLS to gRPC server (port 9443 in prod)
-  ├── Add JWT ServerInterceptor on gRPC (same token as HTTP)
-  ├── Enable Kafka Streams EOS (exactly_once_v2)
-  ├── Add GraphQL query depth and complexity limits
-  ├── Add DataLoader batching to eliminate N+1 in nested resolvers
-  └── Prometheus metrics for Kafka Streams (lag, throughput, window size)
+STAGE 5 (COMPLETE): ML Model Integration & A/B Testing
+  ├── MLFeatureVector (41 features) + MLFeatureExtractor
+  ├── EnsembleModel (Model B) — Momentum + MeanReversion + Trend
+  ├── ModelABRouter — consistent-hash symbol routing
+  ├── ModelPerformanceTracker — Micrometer gauges + Redis
+  ├── Kafka Streams Processor 4 — signals-ml-scored topic
+  ├── GraphQL Mutation type + recordSignalOutcome()
+  └── modelPerformance() + modelAssignment() queries
 
-STAGE 5 (Planned): ML Model Integration
+STAGE 6 (COMPLETE): Backtesting & Strategy Validation Engine
+  ├── BacktestRunner (@Async) — OHLCV replay with inline TA
+  ├── StrategyMetricsEngine — 12 metrics (Sharpe, CAGR, drawdown)
+  ├── WalkForwardValidator — N rolling windows, 80/20 split
+  ├── BacktestRun + BacktestTrade (@Entity) — full audit trail
+  ├── OHLCVDataRepository — added (was missing)
+  ├── Kafka Streams Processor 5 — backtest-results topic (conditional)
+  ├── GraphQL runBacktest mutation + backtestProgress subscription
+  └── backtestRun, listBacktestRuns, walkForwardValidation queries
+
+STAGE 7 (Planned): Deep Learning & ONNX Serving
   ├── ONNX model serving via DJL (Deep Java Library)
   ├── Real-time feature vector construction in Kafka Streams
   ├── 45-feature vector → model inference → confidence score update
-  └── A/B model testing via feature flags
+  └── Outcome reconciliation using backtest-results topic (Stage 6)
 ```
 
 ---
