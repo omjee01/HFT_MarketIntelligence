@@ -1,0 +1,110 @@
+:root {
+  --bg: #ffffff;
+  --bg-elevated: #f5f6f8;
+  --card-bg: #ffffff;
+  --border: #e2e5ea;
+  --fg: #14181f;
+  --fg-muted: #5b6470;
+  --accent: #2563eb;
+  --accent-fg: #ffffff;
+  --success: #157a3d;
+  --success-bg: #e7f6ec;
+  --danger: #b91c1c;
+  --danger-bg: #fbe9e9;
+  --warning: #92620a;
+  --warning-bg: #fdf2df;
+  --shadow: 0 1px 3px rgba(20, 24, 31, 0.08);
+  --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    --bg: #0b0e14;
+    --bg-elevated: #12161f;
+    --card-bg: #161b26;
+    --border: #262c39;
+    --fg: #e7e9ee;
+    --fg-muted: #9aa3b2;
+    --accent: #5b8def;
+    --accent-fg: #0b0e14;
+    --success: #4ade80;
+    --success-bg: #113321;
+    --danger: #f87171;
+    --danger-bg: #3a1616;
+    --warning: #fbbf24;
+    --warning-bg: #3a2c0c;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --focus-ring: 0 0 0 3px rgba(91, 141, 239, 0.45);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b0e14;
+  --bg-elevated: #12161f;
+  --card-bg: #161b26;
+  --border: #262c39;
+  --fg: #e7e9ee;
+  --fg-muted: #9aa3b2;
+  --accent: #5b8def;
+  --accent-fg: #0b0e14;
+  --success: #4ade80;
+  --success-bg: #113321;
+  --danger: #f87171;
+  --danger-bg: #3a1616;
+  --warning: #fbbf24;
+  --warning-bg: #3a2c0c;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --focus-ring: 0 0 0 3px rgba(91, 141, 239, 0.45);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--accent); }
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.btn {
+  font: inherit;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: var(--accent-fg);
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.btn:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+.btn--ghost { background: transparent; color: var(--fg); }
+.btn--danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+input, select {
+  font: inherit;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+input:focus-visible, select:focus-visible { box-shadow: var(--focus-ring); outline: none; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.8em; font-weight: 600; }
+.badge--buy    { background: var(--success-bg); color: var(--success); }
+.badge--sell   { background: var(--danger-bg);  color: var(--danger); }
+.badge--hold   { background: var(--warning-bg); color: var(--warning); }
+.badge--neutral{ background: var(--bg-elevated); color: var(--fg-muted); }
+
+.text-muted { color: var(--fg-muted); }
+.error-text { color: var(--danger); }

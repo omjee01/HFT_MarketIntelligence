@@ -1,5 +1,7 @@
 package com.hft.controller;
 
+import com.hft.identity.DuplicateUserException;
+import com.hft.identity.InvalidCredentialsException;
 import com.hft.model.dto.ApiResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -37,6 +39,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalArg(IllegalArgumentException ex) {
         return ResponseEntity.badRequest().body(ApiResponse.error(ex.getMessage(), "INVALID_ARGUMENT"));
+    }
+
+    @ExceptionHandler(DuplicateUserException.class)
+    public ResponseEntity<ApiResponse<Void>> handleDuplicateUser(DuplicateUserException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(ex.getMessage(), "DUPLICATE_USER"));
+    }
+
+    @ExceptionHandler(InvalidCredentialsException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInvalidCredentials(InvalidCredentialsException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error(ex.getMessage(), "INVALID_CREDENTIALS"));
     }
 
     @ExceptionHandler(Exception.class)

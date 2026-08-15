@@ -1,7 +1,10 @@
 package com.hft.config;
 
+import com.hft.identity.JwtAuthFilter;
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -15,7 +18,10 @@ import org.springframework.security.web.SecurityFilterChain;
  */
 @Configuration
 @EnableWebSecurity
+@RequiredArgsConstructor
 public class SecurityConfig {
+
+    private final JwtAuthFilter jwtAuthFilter;
 
     // Public endpoints that need no authentication
     private static final String[] PUBLIC_ENDPOINTS = {
@@ -30,6 +36,14 @@ public class SecurityConfig {
             "/api/v1/recommendations/**",  // recommendations are publicly readable
             "/api/v1/analysis/**",
             "/api/v1/ipo/**",
+            "/api/v1/auth/register",       // must be reachable before a token exists
+            "/api/v1/auth/login",
+            "/api/v1/auth/refresh",
+            "/",                            // static UI shell (login page must load unauthenticated)
+            "/index.html",
+            "/css/**",
+            "/js/**",
+            "/favicon.ico",
             "/ws/**",                      // WebSocket connections (STOMP)
             "/graphql",                    // GraphQL endpoint
             "/graphql/**",
@@ -47,15 +61,14 @@ public class SecurityConfig {
                 session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
+                .requestMatchers("/api/v1/auth/me").authenticated()
                 .requestMatchers("/api/v1/portfolio/**").authenticated()
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
             )
+            .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
             // Allow H2 console frames
             .headers(headers -> headers.frameOptions(frame -> frame.sameOrigin()));
-
-        // Note: JWT filter would be added here in production:
-        // http.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }
