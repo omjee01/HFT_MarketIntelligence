@@ -1,0 +1,186 @@
+syntax = "proto3";
+
+package hft;
+
+option java_package = "com.hft.grpc.proto";
+option java_multiple_files = true;
+option java_outer_classname = "AnalysisProto";
+
+import "hft/common.proto";
+
+// ─── Requests ──────────────────────────────────────────────────────────────
+
+message AnalysisRequest {
+  string symbol      = 1;
+  MarketProto market = 2;
+}
+
+message MarketRequest {
+  MarketProto market = 1;
+}
+
+// ─── Technical Indicators ──────────────────────────────────────────────────
+
+message TechnicalIndicatorsProto {
+  string      symbol                 = 1;
+  MarketProto market                 = 2;
+  string      interval_type          = 3;   // "1D", "1H", etc.
+
+  // Moving averages
+  double sma20  = 4;
+  double sma50  = 5;
+  double sma200 = 6;
+  double ema9   = 7;
+  double ema21  = 8;
+  double ema55  = 9;
+
+  // Trend
+  double supertrend         = 10;
+  bool   supertrend_bullish = 11;
+
+  // Momentum
+  double rsi14              = 12;
+  double macd_line          = 13;
+  double macd_signal        = 14;
+  double macd_histogram     = 15;
+  bool   macd_bullish_crossover = 16;
+
+  double stochastic_k               = 17;
+  double stochastic_d               = 18;
+  bool   stochastic_bullish_crossover = 19;
+  double williams_r                 = 20;
+  double cci20                      = 21;
+
+  // Volatility
+  double bollinger_upper       = 22;
+  double bollinger_middle      = 23;
+  double bollinger_lower       = 24;
+  double bollinger_band_width  = 25;
+  bool   bollinger_breakout_up = 26;
+  bool   bollinger_breakout_down = 27;
+  double atr14                 = 28;
+  double historical_volatility20 = 29;
+  double implied_volatility    = 30;
+
+  // Volume
+  int64  obv              = 31;
+  bool   obv_trending_up  = 32;
+  double vwap             = 33;
+  double mfi14            = 34;
+  double volume_ratio     = 35;
+
+  // Support / Resistance / Fibonacci
+  double support_level    = 36;
+  double resistance_level = 37;
+  double fibonacci236     = 38;
+  double fibonacci382     = 39;
+  double fibonacci500     = 40;
+
+  // Composite
+  string trend_direction  = 41;   // "BULLISH" / "BEARISH" / "NEUTRAL"
+  double technical_score  = 42;   // 0–100
+  int64  computed_at_ms   = 43;
+}
+
+// ─── Sentiment ─────────────────────────────────────────────────────────────
+
+message SentimentDataProto {
+  string      symbol                  = 1;
+  MarketProto market                  = 2;
+  double      overall_sentiment_score = 3;
+  double      news_sentiment_score    = 4;
+  double      social_sentiment_score  = 5;
+  string      sentiment_label         = 6;   // VERY_BULLISH … VERY_BEARISH
+  int32       total_mentions_24h      = 7;
+  int32       twitter_mentions_24h    = 8;
+  int32       reddit_mentions_24h     = 9;
+  int32       news_articles_24h       = 10;
+  string      mention_trend           = 11;  // RISING / FALLING / STABLE
+  bool        is_trending             = 12;
+  int32       positive_news_count     = 13;
+  int32       negative_news_count     = 14;
+  int32       neutral_news_count      = 15;
+  bool        has_fed_mention         = 16;
+  bool        has_rbi_mention         = 17;
+  bool        has_political_risk      = 18;
+  string      special_alert           = 19;
+  string      window_period           = 20;  // "24H", "1H", "7D"
+  int64       computed_at_ms          = 21;
+}
+
+// ─── Fundamentals ──────────────────────────────────────────────────────────
+
+message FundamentalDataProto {
+  string      symbol              = 1;
+  MarketProto market              = 2;
+  double      pe_ratio            = 3;
+  double      pb_ratio            = 4;
+  double      ps_ratio            = 5;
+  double      ev_to_ebitda        = 6;
+  double      roe                 = 7;
+  double      roa                 = 8;
+  double      debt_to_equity      = 9;
+  double      current_ratio       = 10;
+  double      quick_ratio         = 11;
+  double      revenue_ttm         = 12;
+  double      net_income_ttm      = 13;
+  double      ebitda              = 14;
+  double      eps_ttm             = 15;
+  double      eps_growth_yoy      = 16;
+  double      revenue_growth_yoy  = 17;
+  double      gross_margin        = 18;
+  double      operating_margin    = 19;
+  double      net_margin          = 20;
+  double      dividend_yield      = 21;
+  double      dividend_payout_ratio = 22;
+  double      beta                = 23;
+  double      fundamental_score  = 24;
+  int64       last_updated_ms     = 25;
+}
+
+// ─── Macro / Geopolitical ──────────────────────────────────────────────────
+
+message MacroDataProto {
+  MarketProto market                    = 1;
+  double      interest_rate             = 2;
+  double      interest_rate_prev        = 3;
+  string      interest_rate_outlook     = 4;   // HIKE / CUT / HOLD
+  double      cpi_inflation_rate        = 5;
+  double      wpi_inflation_rate        = 6;
+  string      inflation_trend           = 7;
+  double      gdp_growth_rate_qoq       = 8;
+  double      gdp_growth_rate_yoy       = 9;
+  double      gdp_growth_forecast       = 10;
+  double      unemployment_rate         = 11;
+  double      vix_level                 = 12;
+  string      vix_sentiment             = 13;  // FEAR / NEUTRAL / GREED
+  double      ten_year_yield            = 14;
+  double      two_year_yield            = 15;
+  bool        is_yield_curve_inverted   = 16;
+  double      usd_inr_rate              = 17;
+  double      dxy_index                 = 18;
+  double      fii_net_flow_crores       = 19;
+  double      dii_net_flow_crores       = 20;
+  double      crude_brent_price         = 21;
+  double      crude_brent_change_pct    = 22;
+  double      gold_price_usd            = 23;
+  double      gold_price_inr            = 24;
+  double      geopolitical_risk_score   = 25;
+  string      geopolitical_risk_label   = 26;
+  string      macro_score_str           = 27;  // stringified for null safety
+  double      macro_score               = 28;
+  string      macro_sentiment           = 29;
+  string      sector_tailwinds          = 30;
+  string      sector_headwinds          = 31;
+  string      major_upcoming_events     = 32;
+  int64       last_updated_ms           = 33;
+}
+
+// ─── Service ───────────────────────────────────────────────────────────────
+
+service AnalysisService {
+  rpc GetTechnical   (AnalysisRequest) returns (TechnicalIndicatorsProto);
+  rpc GetSentiment   (AnalysisRequest) returns (SentimentDataProto);
+  rpc GetFundamentals(AnalysisRequest) returns (FundamentalDataProto);
+  rpc GetMacro       (MarketRequest)   returns (MacroDataProto);
+}

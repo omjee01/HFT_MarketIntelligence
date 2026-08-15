@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package hft;
+
+option java_package = "com.hft.grpc.proto";
+option java_multiple_files = true;
+option java_outer_classname = "CommonProto";
+
+// Mirrors com.hft.model.enums.Market
+enum MarketProto {
+  MARKET_UNSPECIFIED = 0;
+  US_NYSE    = 1;
+  US_NASDAQ  = 2;
+  US_AMEX    = 3;
+  US_CBOE    = 4;
+  US_COMEX   = 5;
+  INDIA_NSE  = 6;
+  INDIA_BSE  = 7;
+  INDIA_MCX  = 8;
+  ALL        = 9;
+}
+
+// Mirrors com.hft.model.enums.AssetType
+enum AssetTypeProto {
+  ASSET_TYPE_UNSPECIFIED = 0;
+  STOCK       = 1;
+  OPTION      = 2;
+  FUTURE      = 3;
+  COMMODITY   = 4;
+  IPO         = 5;
+  ETF         = 6;
+  MUTUAL_FUND = 7;
+  BOND        = 8;
+  CURRENCY    = 9;
+  CRYPTO      = 10;
+}
+
+// Mirrors com.hft.model.enums.SignalType
+enum SignalTypeProto {
+  SIGNAL_UNSPECIFIED = 0;
+  STRONG_BUY  = 1;
+  BUY         = 2;
+  HOLD        = 3;
+  SELL        = 4;
+  STRONG_SELL = 5;
+  WATCH       = 6;
+}
+
+// Mirrors com.hft.model.enums.RiskLevel
+enum RiskLevelProto {
+  RISK_UNSPECIFIED = 0;
+  VERY_LOW  = 1;
+  LOW       = 2;
+  MEDIUM    = 3;
+  HIGH      = 4;
+  VERY_HIGH = 5;
+}
+
+// Mirrors com.hft.model.enums.TimeHorizon
+enum TimeHorizonProto {
+  HORIZON_UNSPECIFIED = 0;
+  INTRADAY    = 1;
+  SHORT_TERM  = 2;
+  MEDIUM_TERM = 3;
+  LONG_TERM   = 4;
+}

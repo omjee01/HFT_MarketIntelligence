@@ -62,6 +62,10 @@ hft:
   scheduler:
     market-data-poll-ms: 5000
 
+grpc:
+  server:
+    port: 9090          # gRPC API port (HTTP stays on 8080)
+
 management:
   health:
     redis:

@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package hft;
+
+option java_package = "com.hft.grpc.proto";
+option java_multiple_files = true;
+option java_outer_classname = "MarketDataProto";
+
+import "hft/common.proto";
+
+// ─── Requests ──────────────────────────────────────────────────────────────
+
+message QuoteRequest {
+  string symbol = 1;
+  MarketProto market = 2;
+}
+
+message BatchQuoteRequest {
+  repeated string symbols = 1;
+  MarketProto market = 2;
+}
+
+// ─── Messages ──────────────────────────────────────────────────────────────
+
+message StockQuoteProto {
+  string    symbol               = 1;
+  string    company_name         = 2;
+  MarketProto market             = 3;
+  AssetTypeProto asset_type      = 4;
+  double    current_price        = 5;
+  double    open_price           = 6;
+  double    high_price           = 7;
+  double    low_price            = 8;
+  double    previous_close       = 9;
+  double    day_change           = 10;
+  double    day_change_percent   = 11;
+  double    week_change_percent  = 12;
+  double    month_change_percent = 13;
+  int64     volume               = 14;
+  int64     avg_volume_20_day    = 15;
+  double    market_cap           = 16;
+  string    currency             = 17;
+  double    fifty_two_week_high  = 18;
+  double    fifty_two_week_low   = 19;
+  double    pe_ratio             = 20;
+  double    dividend_yield       = 21;
+  double    beta                 = 22;
+  string    sector               = 23;
+  string    industry             = 24;
+  int64     timestamp_ms         = 25;   // epoch millis
+  string    data_source          = 26;
+  bool      is_market_open       = 27;
+}
+
+message BatchQuoteResponse {
+  repeated StockQuoteProto quotes = 1;
+}
+
+// ─── Service ───────────────────────────────────────────────────────────────
+
+service MarketDataService {
+  // Fetch a single real-time quote
+  rpc GetQuote (QuoteRequest) returns (StockQuoteProto);
+
+  // Fetch a watchlist of quotes in one call
+  rpc GetBatchQuotes (BatchQuoteRequest) returns (BatchQuoteResponse);
+
+  // Server-streaming: push updated quotes as they arrive (for HFT feed consumers)
+  rpc StreamQuotes (BatchQuoteRequest) returns (stream StockQuoteProto);
+}
