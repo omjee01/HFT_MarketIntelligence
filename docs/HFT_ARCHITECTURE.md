@@ -29,6 +29,10 @@
 19. [Deployment Architecture](#19-deployment-architecture)
 20. [Plan of Action (Sprint-wise)](#20-plan-of-action-sprint-wise)
 21. [Requirement Traceability Matrix](#21-requirement-traceability-matrix)
+22. [IPO Buy/Sell Decision Engine](#22-ipo-buysell-decision-engine)
+23. [Web UI Architecture](#23-web-ui-architecture)
+24. [Intelligence Sourcing & Adaptive Fusion (ASRB)](#24-intelligence-sourcing--adaptive-fusion-asrb)
+25. [Identity, Admin & Billing Platform](#25-identity-admin--billing-platform)
 
 ---
 
@@ -1811,6 +1815,467 @@ SPRINT 12 (Week 20): Testing, Hardening & Docs
 | BR-005 (News/Sentiment) | FR-SA-001,2 | sentiment-analysis | /analysis/sentiment/* | Sprint 5 |
 | BR-005 (Social media) | FR-DI-008 | social-media-service | /analysis/sentiment/* | Sprint 5 |
 | BR-005 (Macro/Geo) | FR-GE-001 to 009 | macro-geo-service | /analysis/macro/* | Sprint 6 |
+
+---
+
+## 22. IPO BUY/SELL DECISION ENGINE
+
+### 22.1 Why IPOs Need a Separate Model
+
+`RecommendationEngine` and `BacktestRunner` both assume price history exists (SMA200 warm-up,
+`WalkForwardValidator` 80/20 splits). A brand-new IPO has **zero** OHLCV bars before listing and
+fewer than 20 bars for its first month of trading — the standard TA path is mathematically undefined,
+not just noisy. IPOs therefore get a dedicated two-phase model instead of being forced through the
+existing pipeline.
+
+The distinction that matters: pre-listing the decision is "**apply** to the IPO or not" (a
+subscription decision, output `APPLY_STRONG / APPLY / RISKY / AVOID` — this is already the shape of
+`IPOData.recommendation`). Post-listing it becomes "**buy/hold/sell** the now-trading stock" — a
+different decision with a different action space. One service phase feeds into the other.
+
+### 22.2 Phase 1 — Pre-Listing (Apply / Avoid)
+
+New service: `com.hft.ipo.IPOAnalysisService` (this closes the gap left in the original design —
+`IPOData`/`IPODataRepository` already exist from the foundation build, but no scoring service was
+ever implemented against them).
+
+Inputs — all already present on `IPOData`, no new ingestion needed for the scoring math itself:
+
+```
+ValuationScore  ← peAtIssuePrice, industryPeAvg, evToSalesAtIssuePrice
+DemandScore     ← gmpPercent, retail/qib/nii/overallSubscriptionTimes
+QualityScore    ← leadManagerTrackRecordScore
+SentimentScore  ← SentimentAnalysisService.analyzeSentiment(companyName)   [reused, existing service]
+RegimeContext   ← MacroGeopoliticalService (VIX regime + sector momentum) [reused, existing service]
+```
+
+Formulas:
+
+```
+ValuationScore = 100 − clamp((peAtIssuePrice / industryPeAvg − 1) × 120, −30, 70)
+  // priced below industry P/E scores higher; richly priced issues cap out near 30
+
+DemandScore = clamp(gmpPercent × 1.8, 0, 60)
+            + clamp(overallSubscriptionTimes × 2, 0, 30)
+            + (qibSubscriptionTimes > retailSubscriptionTimes ? 10 : 0)
+  // GMP is weighted heaviest — it is the grey market's own forward price-discovery signal;
+  // QIB-led (institutional) oversubscription is a stronger quality tell than retail-led
+
+QualityScore = clamp(leadManagerTrackRecordScore, 0, 100), default 50 when null
+  // same null-safe "default to neutral" convention as MLFeatureExtractor (Stage 5)
+
+CompositeScore = 0.25×ValuationScore + 0.35×DemandScore + 0.20×SentimentScore + 0.20×QualityScore
+  // decomposes this doc's §16.2 "IPOs: Fundamental 45%, Sentiment 25%" into fields that
+  // actually exist on IPOData: Valuation+Quality together stand in for "Fundamental"
+
+predictedListingGainPercent = gmpPercent × 0.75 + (CompositeScore − 50) × 0.3
+  // GMP historically overstates actual listing gain ~25%; the second term is a
+  // confirmation-bonus / conflict-penalty adjustment, same shape as EnsembleModel (Stage 5)
+```
+
+Recommendation thresholds (reuses the existing 4-state `IPOData.recommendation` field):
+
+```
+APPLY_STRONG : CompositeScore ≥ 75  AND  predictedListingGainPercent ≥ 15%
+APPLY        : CompositeScore ≥ 60
+RISKY        : 40 ≤ CompositeScore < 60,  OR  (DemandScore high, ValuationScore < 30 —
+                "hype-driven pop, weak fundamentals")
+AVOID        : CompositeScore < 40,  OR  peAtIssuePrice > industryPeAvg × 1.5 with DemandScore < 40
+```
+
+Re-scoring cadence: `@Scheduled`, **not** a new Kafka topic — IPO subscription data updates a
+handful of times a day, not at HFT speed, so streaming infrastructure would be unjustified
+complexity here. Runs every 15 minutes during `[subscriptionOpenDate, subscriptionCloseDate]`,
+once daily otherwise for `UPCOMING` issues — recommendation can (and does, in practice) flip
+mid-window as Day-3 QIB subscription numbers land.
+
+### 22.3 Phase 2 — Post-Listing (Hold / Sell)
+
+Once `OHLCVDataRepository` has a first bar for the symbol, `status` moves to `LISTED` and the
+decision becomes a graduated hand-off, keyed off bar count:
+
+```
+Day 0 (listingDate) — the flip decision:
+  actualListingGainPercent = (listingOpenPrice − issuePriceHigh) / issuePriceHigh × 100
+
+  actualGain ≥ 1.5 × predictedListingGainPercent            → PARTIAL_SELL (lock in the pop)
+  actualGain < predictedListingGainPercent AND QualityScore ≥ 60 → HOLD  (thesis intact)
+  actualGain < 0 AND QualityScore < 60                       → SELL (pop failed AND thesis weak)
+  otherwise                                                  → HOLD
+
+Days 1–19 (< WARMUP_BARS — reuses BacktestRunner's existing WARMUP_BARS=20 constant
+           as the graduation threshold, not a new number):
+  Full TechnicalAnalysisService is undefined (needs SMA200). A reduced-indicator scorer
+  (com.hft.ipo.IPOLifecycleScorer) runs instead, using only what's computable this early:
+    • 5-day / 10-day realized volatility
+    • "held above listing-day open" gap-fill check
+    • volume trend vs Day 0–2 (fading volume = fading momentum)
+    • relative strength vs sector index
+  Undefined long-window indicators are omitted from the score, not defaulted to zero —
+  same degrade-gracefully convention MLFeatureExtractor uses for missing MacroData/SentimentData.
+
+Day 20+ (bar count ≥ WARMUP_BARS):
+  Symbol "graduates" — IPOAnalysisService hands off to the standard RecommendationEngine /
+  TechnicalAnalysisService pipeline. From here it is scored exactly like any other listed stock;
+  IPOData's job is done. Graduation check: earliest OHLCVData bar for the symbol is ≥ 20
+  trading days old.
+```
+
+### 22.4 New Surface Area
+
+```
+com.hft.ipo.IPOAnalysisService     — Phase 1 scoring + @Scheduled re-scoring job
+com.hft.ipo.IPOLifecycleScorer     — Phase 2 reduced-indicator scorer, Day 0–19
+com.hft.graphql.IPOResolver        — @QueryMapping ipoRecommendation(symbol), activeIpoRecommendations
+REST GET /recommendations/ipo      — speced in §12.1, not yet implemented; delivered by this stage
+```
+
+No new Kafka topic, no new port — reuses existing `@Scheduled` infra and the existing GraphQL/REST
+layer. IPO application decisions and post-listing trade decisions are surfaced as two clearly
+distinct fields (`ipoRecommendation` vs the standard `TradeRecommendation`) so the UI never
+conflates "should I subscribe" with "should I sell."
+
+---
+
+## 23. WEB UI ARCHITECTURE
+
+### 23.1 Design Goals
+
+```
+- Lightest possible payload — no SPA framework, no bundler required in production
+- One-click theme cycle: Light → Dark → Auto (Auto follows the OS's own light/dark schedule)
+- One responsive layout, phone width through ultra-wide monitor — no separate mobile build
+```
+
+### 23.2 Why Static-Served, Not a Separate Frontend Service
+
+A separate Node/Nginx frontend service would double the ops surface (new container, new port,
+new CORS policy, new CI job) to satisfy a "lightest UI" goal — a contradiction. Spring Boot already
+serves static content from `src/main/resources/static/` on the **same origin** as `/graphql`, REST
+(`/market`, `/analysis`, `/recommendations`), and `/graphql-ws`. No CORS config, no new port, ships
+inside the existing `bootJar`.
+
+### 23.3 Stack
+
+| Layer | Choice | Why |
+|---|---|---|
+| Markup | Plain HTML5, single `index.html` app shell | Zero build step |
+| Styling | CSS3 custom properties + Grid/Flexbox | Theming + responsive layout, no CSS framework |
+| Interactivity | Vanilla ES modules JS | No React/Vue/Angular runtime tax |
+| Live data | Native `fetch` (REST) + native `WebSocket` with a ~3KB hand-rolled `graphql-ws` subprotocol client | Apollo Client alone is 30KB+ gzipped — not needed just to read + subscribe |
+| Charts | Hand-rolled Canvas 2D sparklines/candlesticks | No chart.js/d3 dependency for MVP |
+| State | `localStorage` (theme) + in-memory JS objects | No Redux/MobX needed at this scale |
+
+Optional, deliberately deferred: Alpine.js (~15KB gzip) — add only if hand-rolled DOM updates
+become a real maintenance problem, not up front.
+
+### 23.4 File Layout
+
+```
+src/main/resources/static/
+  index.html                — app shell: header, nav, main grid, theme-toggle button
+  css/
+    theme.css                 — CSS custom-property palettes (light / dark / auto)
+    layout.css                 — responsive grid, breakpoints
+  js/
+    app.js                      — boot, hash router, view mounting
+    graphql-client.js           — fetch() POST helper + graphql-ws subscription client
+    theme-toggle.js             — 3-state cycle, localStorage persistence, FOUC guard
+    views/
+      dashboard.js                — StockDashboard query + liveQuote subscription
+      recommendations.js          — /recommendations/daily + watchlistSignals subscription
+      backtest.js                  — runBacktest mutation + backtestProgress subscription
+      ipo.js                        — /recommendations/ipo + ipoRecommendation query (§22)
+```
+
+### 23.5 Theme Mechanics — Light / Dark / Auto
+
+```css
+:root                                              { --bg:#fff; --fg:#111; --accent:#2563eb; }  /* light, default */
+:root:not([data-theme="light"]):not([data-theme="dark"])
+  @media (prefers-color-scheme: dark)              { --bg:#0b0e14; --fg:#e6e6e6; }               /* auto: follows OS */
+:root[data-theme="dark"]                           { --bg:#0b0e14; --fg:#e6e6e6; }               /* explicit dark wins */
+```
+
+- One header button cycles `light → dark → auto → light`; icon reflects current state (☀ / 🌙 / 🖥).
+- Choice persisted to `localStorage.theme`, applied via a small inline `<script>` in `<head>`
+  before first paint (flash-of-wrong-theme guard).
+- **"Auto" is the daylight mode**: it defers to the OS's own light/dark schedule rather than
+  hardcoding a clock or doing geolocation/sunrise math the OS already owns.
+
+### 23.6 Responsive Layout
+
+```
+Mobile   (<768px):    1-column stack, bottom tab bar nav, 44px+ touch targets
+Tablet   (768–1200px): 2-column CSS Grid, left icon-rail nav
+Desktop  (>1200px):    auto-fit grid — repeat(auto-fit, minmax(320px, 1fr)), left sidebar nav
+```
+
+`@media (hover: hover)` gates hover-only affordances so touch devices never get stuck-hover states.
+
+### 23.7 Data Flow
+
+```
+First paint  → REST GET (/market/quote, /recommendations/daily, /recommendations/ipo)
+               fast first paint, no WebSocket handshake needed
+Live updates → GraphQL subscriptions over the existing /graphql-ws:
+               liveQuote, liveSignals, watchlistSignals, backtestProgress, ipoRecommendation
+Auth         → JWT in sessionStorage (not localStorage — smaller XSS persistence window),
+               Authorization: Bearer on REST/GraphQL, connection_init payload on the WS handshake
+               — reuses the existing Stage 4 SecurityConfig JWT filter chain, zero backend changes
+```
+
+### 23.8 Deployment Impact
+
+No new service, no new port, no new container, no Node/npm in the production build path.
+`gradle bootJar` packages `static/` automatically into the same JAR. Node is optional and
+local-dev-only (e.g. a live-reload static file server) — never a build dependency.
+
+---
+
+## 24. INTELLIGENCE SOURCING & ADAPTIVE FUSION (ASRB)
+
+### 24.1 The Gap This Closes
+
+A code audit (2026-08-16) found that the platform's "AI-powered, news/social/macro-driven"
+positioning was only partly real:
+
+```
+REAL:     US/India quotes (Alpha Vantage, NSE), US fundamentals (Alpha Vantage OVERVIEW),
+          Alpha Vantage NEWS_SENTIMENT
+WIRED BUT OFF BY DEFAULT: NewsAPI.org, FRED macro data (both real integrations, gated by
+          config flags defaulting to false outside prod)
+FAKE:     Social sentiment = Math.random() noise on top of the news score. Twitter/Reddit
+          config keys declared in YAML, never read by any Java code. US macro fallback,
+          all of India macro, and geopolitical risk = hardcoded literals. India fundamentals
+          = DB passthrough with no external fetch.
+```
+
+Sections 24 and 25 replace this with real sourcing and a purpose-built fusion algorithm,
+plus the identity/consent infrastructure needed to do it legally.
+
+### 24.2 Real Sources — Free/No-Key Tier (build now)
+
+```
+NewsAPI.org        — flip existing `newsApiEnabled` default to true (already coded)
+FRED                — flip existing `fredEnabled` default to true (already coded)
+Reddit              — free API tier, OAuth app-only auth, r/investing r/stocks r/wallstreetbets
+                       r/IndiaInvestments — replaces the Math.random() social score
+StockTwits          — free public API, no auth required for read endpoints
+SEC EDGAR           — full-text search API, free, no key. 10-K/10-Q/8-K filings, insider
+                       trading forms — real company-history signal (§3.1's FR-DI-005 origin)
+GDELT Project       — free, open, ~100-language global news/event database. Real replacement
+                       for the hardcoded geopoliticalRiskScore constants
+RBI / NSE India     — RBI DBIE open data (rates, CPI, GDP), NSE FII/DII daily flow reports —
+                       replaces 100%-hardcoded India macro
+Screener.in / NSE   — replaces DB-only India fundamentals placeholder
+  filings
+WebIntelligenceCrawler — RSS/sitemap-driven (not a general spider), jsoup-based fetch+parse,
+                       per-domain politeness/rate-limiting, robots.txt-respecting. Walks
+                       company IR pages and news sites' own published feeds. Scheduled batch,
+                       not real-time. GDELT already covers most broad open-web news crawl
+                       needs, so this is for targeted per-symbol IR/filing pages GDELT misses.
+```
+
+**Hard constraint carried through every source above and the crawler:** no ToS-violating
+scraping, no robots.txt bypass, no credential-based access without the explicit read-only
+consent flow in §25. This is a standing constraint on every mechanism in this document, not
+a one-time check — see §24.6.
+
+Twitter/X API and paid press-release wires are deferred: Twitter/X has no free tier, and
+wire services are typically paid — both require a budget decision, not an engineering one.
+
+### 24.3 User-Supplied Read-Only Sources (BYOC)
+
+Site users may optionally connect their own Twitter/X, Reddit, or paid news portal account
+(read-only OAuth scopes only) to widen the source pool. See §25.3 for the account model —
+this requires real user identity, which did not exist in the codebase prior to this stage.
+
+**Policy: platform-pooled benefit.** A connected account's read-only signal feeds the shared
+source pool used by every user's predictions, not just the connecting user's own — this was
+an explicit product decision (favoring data coverage over the simpler per-user-only model),
+made on the condition that it stays within per-source legal/ToS limits (§24.6) and carries
+an explicit, accurate consent disclosure:
+
+> "The information read from your connected account is used read-only. We never store your
+> account's identity content or personal details — only a derived signal (a sentiment/topic
+> score) is retained, and it helps improve prediction robustness for all users of the
+> platform, not only you."
+
+That disclosure needs one precision fix before it ships (§24.6): "personal/identity
+information won't be used/stored EVER" is likely too strong a claim to make verbatim — the
+`ConnectedAccount` record itself (which account is linked, to which platform user) is
+personal data under GDPR/DPDP even if post content isn't retained. The corrected claim is
+"we don't store your posts, messages, or account content — only a derived numeric signal,"
+which is both true and still a strong, user-friendly guarantee.
+
+### 24.4 The ASRB Algorithm
+
+**Adaptive Source Reliability Bandit** — fuses N heterogeneous, individually unreliable,
+non-stationary, sometimes-correlated, sometimes-adversarial information sources into one
+posterior confidence score per symbol. Full mathematical specification, prior-art
+comparison, and novelty argument: **`docs/ASRB_TECHNICAL_DISCLOSURE.md`** (prepared as
+engineering input for IP counsel — see that document's disclaimer before relying on any
+novelty claim in it).
+
+Summary pipeline (six steps, run per source per scoring pass):
+
+```
+1. CORRELATION DISCOUNT   — down-weight a source's evidence in proportion to how much its
+                             recent signal is explained by co-movement with already-counted
+                             sources this pass (prevents N correlated sources reporting the
+                             same underlying event from being counted as N independent
+                             confirmations)
+
+2. MISINFORMATION DISCOUNT — down-weight evidence by a risk score built from: this source's
+                             historical reliability (reuses step 3's own posterior), whether
+                             independent uncorrelated sources corroborate the specific claim,
+                             and whether claim-velocity is spiking faster than corroboration
+                             can follow (the classic early-rumor signature). A high-risk,
+                             high-velocity claim ALSO emits a separate narrative/reputational
+                             RiskLevel flag on the affected symbol — a false narrative can
+                             still move price and damage a real business (worked example:
+                             §ASRB doc §6) even while we discount it as a truth signal
+
+3. POSTERIOR UPDATE        — update this source's Bayesian-linear reliability posterior with
+                             the doubly-discounted evidence, applying an exponential decay to
+                             existing sufficient statistics first (non-stationarity: a source
+                             can silently degrade and the posterior must be able to forget)
+
+4. STABILITY INDEX         — compute this source's posterior drift-velocity and variance-
+                             shrinkage rate, calibrated relative to the current cross-source
+                             population (not a fixed constant — self-calibrates across
+                             market regimes)
+
+5. POLICY SELECTION        — stability index above its population-relative threshold → rank
+                             by Gittins index (provably optimal once a source is
+                             well-characterized and stationary). Below threshold (new,
+                             sparse, or actively drifting source) → Thompson-sample from the
+                             posterior instead (Gittins indices aren't valid outside the
+                             stationary case; TS degrades gracefully)
+
+6. AGGREGATE                — blend weighted samples/indices into the composite posterior
+                             score, feeding RecommendationEngine / EnsembleModel /
+                             IPOAnalysisService exactly as today — no interface changes to
+                             the existing consumers, only better inputs than the current
+                             random/hardcoded values
+```
+
+Reward signal (what "was this source right?" means in step 3): the existing
+`recordSignalOutcome` mutation and `BacktestTrade` results — both already built in Stages 5–6.
+No new outcome-tracking infrastructure, no training loop, no replay buffer, no GPU — this
+rides on Redis with the same TTL pattern `ModelPerformanceTracker` already established.
+
+### 24.5 Open Engineering Decisions
+
+```
+LSTM vs. transformer/attention encoder for the neural-linear context layer and for claim/
+  stance clustering (the corroboration-count feature in step 2): a transformer-based sentence
+  encoder is the stronger default by current practice for both temporal source-behavior
+  sequences and claim-similarity clustering; LSTM remains viable if lower compute/complexity
+  is preferred. Not yet decided.
+Exact discount/decay constants (γ for non-stationarity, correlation-penalty curve,
+  risk-aversion factor in step 2): require calibration against real backtest data, not
+  guessed up front.
+```
+
+### 24.6 Legal & Compliance Posture
+
+**This is engineering-informed analysis, not legal advice — recommend counsel review before
+any BYOC pooling ships to real users, especially outside the jurisdictions named below.**
+
+Two separate legal axes apply, and they don't move together:
+
+```
+1. PLATFORM DEVELOPER TERMS (contract law — this is the sharper, more universal risk)
+   Each source's Developer Agreement is a contract between us and that platform, not
+   between us and the connecting user. A connecting user's consent does not waive OUR
+   contractual obligations to Twitter/X, Reddit, etc. Several platforms' developer terms
+   historically restrict using one authenticated user's access to build aggregate products
+   that serve or benefit OTHER users/third parties, independent of what the connecting user
+   agreed to. This must be checked PER SOURCE, individually, before enabling pooling for
+   that source — a blanket "we have user consent" does not clear this. Likely order of
+   risk (lowest to highest, subject to actual review): Reddit's API terms have historically
+   been more permissive for this use than Twitter/X's; paid news portal subscriber
+   agreements (WSJ/FT/Bloomberg-style) typically explicitly forbid extracting content via
+   your own login to benefit non-subscribers, which platform-pooling would do by definition.
+
+2. DATA PROTECTION LAW (privacy law — jurisdiction-dependent, but broadly applicable)
+   GDPR (EU/UK), India's DPDP Act 2023 (directly relevant — this platform explicitly targets
+   NSE/BSE/Indian users), and CCPA/CPRA (California) all apply if users from those
+   jurisdictions connect accounts. Consent-based processing is workable (this is an opt-in
+   feature), but requires: accurate disclosure of what's actually retained (§24.3's
+   correction), a defined retention period even for derived signals, and a working
+   deletion/disconnect path (§25.3) — "we don't store personal data" is not the same claim
+   as "we don't store your post content," and only the second is accurate here since the
+   ConnectedAccount linkage itself is personal data.
+```
+
+Also required before production, independent of BYOC: a real Terms of Service and Privacy
+Policy for the platform itself (does not exist yet), and the existing "informational purposes
+only, not investment advice" disclaimer (already used elsewhere in this doc) should be
+reviewed against actual investment-advice regulation (SEC/RIA rules in the US, SEBI rules in
+India) given predictions are now partly built from pooled third-party social signal.
+
+---
+
+## 25. IDENTITY, ADMIN & BILLING PLATFORM
+
+### 25.1 Why This Exists
+
+`SecurityConfig.java` has a JWT filter chain, but it's disabled
+(`// http.addFilterBefore(jwtAuthFilter, ...)`, line 58) and there is no `User` entity
+anywhere in the codebase. §24.3's pooled BYOC model needs real per-user identity to hang
+`ConnectedAccount` records off — this stage builds that, plus the admin/billing surface
+needed to operate a real multi-user product (registration, usage tracking, charges,
+violation handling, deregistration).
+
+### 25.2 Scope
+
+```
+Registration / login       — real User entity, actual JWT issuance (the currently-disabled
+                              filter gets wired up, not just left commented out)
+Roles                       — USER, ADMIN at minimum (matches the ROLE_PREMIUM mention
+                              already sketched in §18 Security Architecture)
+Admin console               — user list/search, suspend/reinstate, usage/activity view,
+                              ToS-violation handling (e.g. a connected account a provider
+                              flags or revokes), manual deregistration
+Billing                     — charges, transactions, payment method, plan/tier — deferred
+                              provider choice (Stripe-shaped integration is the likely fit,
+                              not yet decided)
+Deregistration              — user-initiated account deletion; must cascade to revoking and
+                              deleting all ConnectedAccount tokens (§24.3, §24.6 axis 2)
+```
+
+This is a genuinely separate stage from the ML/data-sourcing work in §24 — different
+concerns (auth, payments, admin UX) — and is sequenced independently.
+
+### 25.3 Connected Account Model
+
+```
+com.hft.identity.User                  (@Entity — does not exist yet, this stage creates it)
+com.hft.identity.ConnectedAccount      (@Entity)
+  userId, provider (TWITTER_X | REDDIT | ...), encryptedAccessToken,
+  encryptedRefreshToken, grantedScopes, connectedAt, expiresAt, lastUsedAt, revokedAt
+com.hft.identity.ReadOnlyScopePolicy   — per-provider allowlist of permitted OAuth scopes;
+                                         connect flow checks granted scopes against this
+                                         allowlist and FAILS CLOSED — a provider bundle that
+                                         includes write scope is refused at connect-time,
+                                         not merely "not used" after the fact
+com.hft.identity.ConnectedAccountService — connect (OAuth2 auth-code flow, read scopes only),
+                                         disconnect (revokes with provider, hard-deletes
+                                         locally), refresh
+```
+
+Token storage: field-level encryption, key managed outside the application config (KMS or
+equivalent) — not an app-level key sitting beside the database, given these are third-party
+account credentials.
+
+### 25.4 Test User
+
+Until this stage is implemented, there is no functioning login. Once built, **PTD2315**
+(git identity on this repo) / **omanu01@gmail.com** is the designated first seed user, with
+both USER and ADMIN roles, for testing the connected-account flow end to end.
 
 ---
 

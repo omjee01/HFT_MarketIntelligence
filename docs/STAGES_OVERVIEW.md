@@ -367,6 +367,42 @@ docs/STAGES_OVERVIEW.md                                    (this file)
 
 ---
 
+### Stage 7 — Real Intelligence Data Sourcing
+
+A code audit (2026-08-16) found the platform's news/social/macro pipeline was partly
+synthetic — see `docs/STAGE7_DATA_SOURCING.md` for the full source-by-source verdict. This
+stage replaces every fake/hardcoded input that could be replaced with a real, no-cost,
+ToS-compliant source, and reserves the Stage 7 slot originally planned for ONNX (which
+becomes Stage 8 — see §11).
+
+| Before | After |
+|---|---|
+| Social sentiment = `Math.random()` noise | Real Reddit (OAuth2) + StockTwits scoring |
+| NewsAPI, FRED real but disabled by default | Both on by default, safe no-op without a key |
+| No company-filing signal | SEC EDGAR full-text search (8-K/10-K/10-Q), US, verified live |
+| Geopolitical risk = hardcoded 5.0 (US) / 4.0 (India) | GDELT tone-derived score (implemented, reachability unverified — see doc) |
+| India FII/DII flow = hardcoded "BUYING", 5 days | Real NSE `fiidiiTradeReact` endpoint, verified live |
+| India repo rate/CPI/GDP | Unchanged — no free RBI API found this pass |
+| India fundamentals | Unchanged — Screener.in's only JSON endpoint is robots.txt-disallowed |
+
+No new files, no new entities, no new GraphQL fields, no new Kafka topics/ports — this stage
+only modified three existing services plus config. Full detail, including exactly which
+sources are genuinely live versus honestly blocked and why: `docs/STAGE7_DATA_SOURCING.md`.
+
+**Modified files:**
+```
+src/main/java/com/hft/service/analysis/SentimentAnalysisService.java   (+SEC EDGAR, Reddit, StockTwits)
+src/main/java/com/hft/service/analysis/MacroGeopoliticalService.java   (+GDELT, +NSE FII/DII)
+src/main/java/com/hft/service/analysis/FundamentalAnalysisService.java (comment only — Screener.in blocked)
+src/main/resources/application.yml, application-dev.yml                (new source config, flags flipped on)
+docs/HFT_ARCHITECTURE.md                                                (+§22 IPO, §23 UI, §24 ASRB, §25 Identity)
+docs/ASRB_TECHNICAL_DISCLOSURE.md                                       (new — algorithm spec + novelty draft)
+docs/STAGE7_DATA_SOURCING.md                                            (new — this stage's detail doc)
+docs/STAGES_OVERVIEW.md                                                 (this file)
+```
+
+---
+
 ## 4. DEPENDENCY EVOLUTION (build.gradle.kts)
 
 ```
@@ -560,13 +596,15 @@ gRPC (Stage 2):
 
 | Document | Contents |
 |---|---|
-| `docs/HFT_ARCHITECTURE.md` | Full platform architecture (foundation), 20 sections |
 | `docs/STAGE1_GRAPHQL.md` | GraphQL layer — how to run, queries, subscriptions, enhancements |
 | `docs/STAGE2_GRPC.md` | gRPC pipeline — proto contracts, grpcurl commands, port layout |
 | `docs/STAGE3_KAFKA_STREAMS.md` | Kafka Streams topology — processors, topics, run guide, outputs |
 | `docs/STAGE4_PRODUCTION_HARDENING.md` | Multi-node hardening — Redis fan-out, gRPC TLS/auth, GraphQL limits, metrics |
 | `docs/STAGE5_ML_PIPELINE.md` | ML pipeline — EnsembleModel, A/B routing, Processor 4, GraphQL Mutation, Prometheus |
 | `docs/STAGE6_BACKTESTING.md` | Backtesting engine — BacktestRunner algo, metrics reference, walk-forward, GraphQL guide |
+| `docs/STAGE7_DATA_SOURCING.md` | Real data sourcing — source-by-source real/blocked/deferred verdict, config, verification |
+| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 25 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin |
+| `docs/ASRB_TECHNICAL_DISCLOSURE.md` | Adaptive Source Reliability Bandit — algorithm spec, prior art, novelty draft, eval methodology |
 | `docs/STAGES_OVERVIEW.md` | This file — evolution summary, performance comparison |
 
 ---
@@ -593,15 +631,44 @@ STAGE 6 (COMPLETE): Backtesting & Strategy Validation Engine
   ├── GraphQL runBacktest mutation + backtestProgress subscription
   └── backtestRun, listBacktestRuns, walkForwardValidation queries
 
-STAGE 7 (Planned): Deep Learning & ONNX Serving
+STAGE 7 (COMPLETE): Real Intelligence Data Sourcing
+  ├── SEC EDGAR filings, real NSE FII/DII flow — verified live
+  ├── NewsAPI + FRED — real integrations switched on by default
+  ├── Reddit — real OAuth2 flow implemented, needs user-supplied API keys
+  ├── StockTwits, GDELT — implemented, blocked/unverified respectively (see STAGE7 doc)
+  └── India repo rate/CPI/GDP, India fundamentals — honestly left on fallback (no ToS-safe API found)
+
+STAGE 8 (COMPLETE): Identity, Admin Platform & Web UI
+  ├── com.hft.identity — User/Role, JwtService (com.auth0:java-jwt), JwtAuthFilter (SecurityConfig's
+  │     JWT filter was pure scaffolding before this — no filter class existed anywhere)
+  ├── /api/v1/auth/register|login|refresh|me — real JWT issuance, access+refresh tokens
+  ├── TestUserSeeder — PTD2315/omanu01@gmail.com, USER+ADMIN, fresh SecureRandom password each boot
+  ├── com.hft.admin — PlatformApiCredential (AES-256-GCM at rest), AdminSettingsController —
+  │     admin-managed NewsAPI/FRED/Reddit keys, write-only, distinct from per-user BYOC (§24.3, not built)
+  ├── Web UI at src/main/resources/static/ — static HTML/CSS/vanilla-JS, no build step, 3-state
+  │     Light/Dark/Auto theme toggle, mobile/tablet/desktop responsive, REST-only (GraphQL/WS
+  │     subscriptions deferred as a fast-follow)
+  └── Verified end-to-end: full curl smoke test + live in a real Chrome browser (login, a real
+        MSFT recommendation rendered from genuinely live Alpha Vantage/NewsAPI/SEC EDGAR data,
+        admin credential save/clear round-trip, theme cycling) — not just unit/compile-verified
+
+STAGE 9 (Planned, was "Stage 7", then "Stage 8"): Deep Learning & ONNX Serving
   ├── ONNX model serving via DJL (Deep Java Library)
   ├── Real-time feature vector construction in Kafka Streams
   ├── 45-feature vector → model inference → confidence score update
   └── Outcome reconciliation using backtest-results topic (Stage 6)
+
+ALSO DESIGNED (docs/HFT_ARCHITECTURE.md §22, §24), not yet built, no stage number assigned:
+  ├── IPO Buy/Sell Decision Engine (§22) — pre-listing apply/avoid, post-listing hold/sell — NEXT UP
+  ├── ASRB — Adaptive Source Reliability Bandit (§24, ASRB_TECHNICAL_DISCLOSURE.md) — the
+  │     correlation-/misinformation-aware fusion algorithm — NEXT UP, now that Stage 7's real
+  │     sources exist for it to weight
+  └── Per-user BYOC ConnectedAccount (§24.3, §25 identity foundation now exists from Stage 8) —
+        a user linking their own read-only Twitter/Reddit account, pooled into the shared signal
 ```
 
 ---
 
-*All Stages Complete | Repository: https://github.com/omjee01/HFT_MarketIntelligence*
+*Repository: https://github.com/omjee01/HFT_MarketIntelligence*
 *All trading signals are for informational/educational purposes only.*
 *Not investment advice. Consult a SEBI/SEC-registered advisor for financial decisions.*
