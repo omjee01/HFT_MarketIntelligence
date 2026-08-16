@@ -213,6 +213,13 @@ hft:
     ta-compute-interval-ms: 60000
     sentiment-refresh-cron: "0 */15 * * * *"
     daily-report-cron: "0 0 8 * * MON-FRI"
+    ipo-open-rescore-cron: "0 */15 * * * *"    # OPEN IPOs re-score every 15 min during subscription window
+    ipo-daily-rescore-cron: "0 0 8 * * *"      # UPCOMING IPOs re-score once daily
+
+  # IPO Buy/Sell Decision Engine (§22) — no real SEBI/SEC IPO ingestion exists yet
+  ipo:
+    seed-sample-data:
+      enabled: true    # 3 sample IPOData rows so the endpoints return something real to test
 
   # JWT
   jwt:

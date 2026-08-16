@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface IPODataRepository extends JpaRepository<IPOData, Long> {
@@ -13,4 +14,12 @@ public interface IPODataRepository extends JpaRepository<IPOData, Long> {
     List<IPOData> findByStatusAndMarket(String status, Market market);
 
     List<IPOData> findByStatusOrderBySubscriptionCloseDateAsc(String status);
+
+    List<IPOData> findByStatus(String status);
+
+    List<IPOData> findByStatusIn(List<String> statuses);
+
+    Optional<IPOData> findFirstBySymbolOrderByLastUpdatedDesc(String symbol);
+
+    boolean existsBySymbol(String symbol);
 }

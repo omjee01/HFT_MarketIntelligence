@@ -343,6 +343,42 @@ type ModelPerformance {
     avgReturnPct:       Float!
 }
 
+# ─── IPO Types (Stage: IPO Buy/Sell Decision Engine, §22) ────────────────────
+type IPOData {
+    id:                           Long
+    symbol:                       String!
+    companyName:                  String!
+    market:                       Market!
+    sector:                       String
+    industry:                     String
+    issuePriceLow:                BigDecimal
+    issuePriceHigh:                BigDecimal
+    issueSizeCrores:               BigDecimal
+    lotSize:                       Int
+    subscriptionOpenDate:          Date
+    subscriptionCloseDate:         Date
+    allotmentDate:                 Date
+    listingDate:                   Date
+    retailSubscriptionTimes:       Float
+    qibSubscriptionTimes:          Float
+    niiSubscriptionTimes:          Float
+    overallSubscriptionTimes:      Float
+    gmpPercent:                    Float
+    peAtIssuePrice:                Float
+    industryPeAvg:                 Float
+    evToSalesAtIssuePrice:         Float
+    valuationVerdict:              String
+    leadManagers:                  String
+    leadManagerTrackRecordScore:   Float
+    predictedListingGainPercent:   Float
+    listingGainConfidence:         Float
+    recommendation:                String    # APPLY_STRONG | APPLY | RISKY | AVOID
+    recommendationReason:          String
+    status:                        String!   # UPCOMING | OPEN | CLOSED | LISTED
+    actualListingGainPercent:      Float
+    lastUpdated:                   DateTime
+}
+
 # ─── Queries ──────────────────────────────────────────────────────────────────
 type Query {
     # Market Data
@@ -371,6 +407,10 @@ type Query {
     backtestRun(runId: String!): BacktestRun
     listBacktestRuns(market: Market): [BacktestRun!]!
     walkForwardValidation(input: BacktestInput!, windows: Int): [WalkForwardResult!]!
+
+    # IPO Buy/Sell Decision Engine (§22) — apply/avoid pre-listing, hold/sell post-listing
+    ipoRecommendation(symbol: String!): IPOData
+    activeIpoRecommendations: [IPOData!]!
 }
 
 # ─── Mutations (Stage 5) ──────────────────────────────────────────────────────

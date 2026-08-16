@@ -111,6 +111,10 @@ hft:
     seed-test-user:
       enabled: false   # never auto-create a known test account in production
 
+  ipo:
+    seed-sample-data:
+      enabled: false   # never insert fake IPO rows in production
+
   scheduler:
     market-data-poll-ms: 500      # live polling at 500ms
 
