@@ -164,6 +164,12 @@ hft:
     base-url: https://www.screener.in/api
     enabled: true
 
+  # Stage 9c — ClickHouse analytics store (trade-signal / transaction history).
+  # Off by default: only "docker" (local) and "prod" turn this on, since it
+  # requires a live ClickHouse instance. See docker-compose.yml.
+  clickhouse:
+    enabled: false
+
   # Market Hours (IST timezone stored here)
   market:
     us:

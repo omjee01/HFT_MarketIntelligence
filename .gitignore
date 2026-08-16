@@ -24,6 +24,7 @@ application-secrets.yml
 *.env
 .env
 .env.*
+!.env.example
 secrets.yml
 secrets.properties
 

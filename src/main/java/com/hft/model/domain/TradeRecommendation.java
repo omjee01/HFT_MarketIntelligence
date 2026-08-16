@@ -20,7 +20,7 @@ import java.util.UUID;
 @Table(name = "trade_recommendations",
        indexes = {
            @Index(name = "idx_reco_symbol", columnList = "symbol"),
-           @Index(name = "idx_reco_market_signal", columnList = "market, signal"),
+           @Index(name = "idx_reco_market_signal", columnList = "market, signal_type"),
            @Index(name = "idx_reco_generated", columnList = "generated_at"),
            @Index(name = "idx_reco_status", columnList = "status")
        })
@@ -61,8 +61,10 @@ public class TradeRecommendation {
     private String sectorOutlook;          // "POSITIVE" / "NEUTRAL" / "NEGATIVE"
 
     // ─── Signal ───────────────────────────────────────────────────────────────
+    // Explicit column name: "signal" is a MySQL reserved word (used by the SIGNAL
+    // statement). H2 doesn't reserve it, so this was silently fine until MySQL.
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
+    @Column(name = "signal_type", nullable = false, length = 20)
     private SignalType signal;             // BUY / SELL / HOLD / STRONG_BUY / etc.
 
     @Enumerated(EnumType.STRING)
@@ -157,7 +159,9 @@ public class TradeRecommendation {
     @Column(nullable = false, length = 20)
     private String status;                 // "ACTIVE" / "CLOSED" / "EXPIRED" / "TRIGGERED"
 
-    @Column(length = 30)
+    // Explicit column name: "rank" became a MySQL reserved word in 8.0 (window
+    // functions). Same H2-vs-MySQL gap as "signal" above.
+    @Column(name = "reco_rank", length = 30)
     private String rank;                   // "TOP_1", "TOP_2", etc. within its category
 
     // ─── Helpers ──────────────────────────────────────────────────────────────

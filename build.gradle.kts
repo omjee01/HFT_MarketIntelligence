@@ -47,7 +47,11 @@ dependencies {
     // ─── Spring Data ──────────────────────────────────────────────────────────
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     runtimeOnly("com.h2database:h2")                        // Dev in-memory DB
-    runtimeOnly("org.postgresql:postgresql")                 // Production DB
+    runtimeOnly("org.postgresql:postgresql")                 // Available if a deployment target needs it
+    runtimeOnly("com.mysql:mysql-connector-j")                // User/identity RDBMS (docker profile + prod)
+
+    // ─── ClickHouse (analytics / signal-transaction store) ───────────────────
+    implementation("com.clickhouse:clickhouse-jdbc:0.6.3:all")
 
     // ─── Spring Security + JWT ────────────────────────────────────────────────
     implementation("org.springframework.boot:spring-boot-starter-security")

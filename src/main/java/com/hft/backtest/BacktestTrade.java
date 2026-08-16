@@ -34,8 +34,10 @@ public class BacktestTrade {
     @Column(nullable = false, length = 30)
     private String symbol;
 
+    // Explicit column name: "signal" is a MySQL reserved word (the SIGNAL statement).
+    // H2 doesn't reserve it, so this was silently fine until MySQL.
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
+    @Column(name = "signal_type", nullable = false, length = 20)
     private SignalType signal;
 
     @Column(nullable = false)
