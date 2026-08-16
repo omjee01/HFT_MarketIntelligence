@@ -27,6 +27,7 @@ extra["commonsLang3Version"] = "3.14.0"
 extra["guavaVersion"] = "33.2.1-jre"
 extra["springdocVersion"] = "2.5.0"
 extra["graphqlExtendedScalarsVersion"] = "22.0"
+extra["djlVersion"] = "0.31.1"
 
 // Force patched protobuf to satisfy CVE-2024-7254 (grpc pulls 3.25.1 transitively)
 configurations.all {
@@ -97,6 +98,12 @@ dependencies {
 
     // ─── Metrics / Observability (Stage 4) ───────────────────────────────────
     runtimeOnly("io.micrometer:micrometer-registry-prometheus")   // /actuator/prometheus scrape endpoint
+
+    // ─── ONNX Model Serving (Stage 11) ────────────────────────────────────────
+    // Serving infra only — no model is bundled. hft.onnx.model-path is empty by default;
+    // OnnxModelService no-ops gracefully until a real .onnx file is configured.
+    implementation("ai.djl:api:${property("djlVersion")}")
+    runtimeOnly("ai.djl.onnxruntime:onnxruntime-engine:${property("djlVersion")}")
 
     // ─── API Documentation ────────────────────────────────────────────────────
     implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:${property("springdocVersion")}")

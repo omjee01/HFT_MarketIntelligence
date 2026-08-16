@@ -164,6 +164,14 @@ hft:
     base-url: https://www.screener.in/api
     enabled: true
 
+  # Stage 11 — ONNX model serving (DJL + ONNX Runtime). No model bundled — model-path is
+  # empty by default, and OnnxModelService no-ops gracefully everywhere until a real .onnx
+  # file (batch-1, 41-float input, single 0-100-scale scalar output) is configured. See
+  # docs/STAGE11_ONNX_SERVING.md.
+  onnx:
+    enabled: true
+    model-path: ""
+
   # Stage 10 — Adaptive Source Reliability Bandit (ASRB), wired live into
   # SentimentAnalysisService. docs/ASRB_TECHNICAL_DISCLOSURE.md §10 explicitly leaves these
   # uncalibrated pending real backtest data — these are structural starting defaults, not

@@ -4,6 +4,7 @@ import com.hft.model.domain.*;
 import com.hft.model.enums.*;
 import com.hft.ml.MLFeatureExtractor;
 import com.hft.ml.ModelABRouter;
+import com.hft.ml.onnx.OnnxModelService;
 import com.hft.service.analysis.*;
 import com.hft.service.data.MarketDataAggregatorService;
 import com.hft.service.ml.MLPredictionService;
@@ -29,9 +30,10 @@ import java.util.stream.Collectors;
  * Flow for each symbol:
  *  1. Fetch latest quote (MarketDataAggregatorService)
  *  2. Technical Analysis (TechnicalAnalysisService)
- *  3. Sentiment Analysis (SentimentAnalysisService)
- *  4. Fundamental Analysis (FundamentalAnalysisService)
- *  5. Macro/Geopolitical Analysis (MacroGeopoliticalService)
+ *  3. Fundamental Analysis (FundamentalAnalysisService)
+ *  4. Macro/Geopolitical Analysis (MacroGeopoliticalService)
+ *  5. Sentiment Analysis (SentimentAnalysisService) — ASRB-fused (Stage 10); needs 3/4
+ *     computed first to build its market context, hence this ordering
  *  6. ML Prediction (MLPredictionService)
  *  7. Risk filters (RiskManagementService)
  *  8. Assemble TradeRecommendation
@@ -49,6 +51,7 @@ public class RecommendationEngine {
     private final MLPredictionService         mlService;
     private final RiskManagementService       riskService;
     private final MLFeatureExtractor          featureExtractor;
+    private final OnnxModelService            onnxModelService;
 
     /** Null when Stage 5 is not on classpath or disabled. Falls back to mlService.predict(). */
     @Autowired(required = false)
@@ -147,6 +150,37 @@ public class RecommendationEngine {
 
         } catch (Exception e) {
             log.error("[Engine] Failed to process {}: {}", symbol, e.getMessage(), e);
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * ONNX prediction (Stage 11) for a single symbol — independent of generateRecommendation()
+     * (doesn't run risk/liquidity filters or build a TradeRecommendation, since this is a raw
+     * model score, not a trade call). Returns empty when no quote is available OR when
+     * OnnxModelService has no model loaded (the default/shipped state — see
+     * docs/STAGE11_ONNX_SERVING.md). Builds a real, fully-populated context (unlike the
+     * sentiment=null bootstrapping context ASRB uses internally — this is a standalone
+     * prediction call, sentiment is already resolvable) via the same quote/TA/FD/macro/
+     * sentiment services generateRecommendation() uses, so results are directly comparable.
+     */
+    public Optional<Double> getOnnxPrediction(String symbol, Market market) {
+        if (!onnxModelService.isAvailable()) return Optional.empty();
+        try {
+            Optional<StockQuote> quoteOpt = marketData.getQuote(symbol, market);
+            if (quoteOpt.isEmpty()) return Optional.empty();
+            StockQuote quote = quoteOpt.get();
+
+            TechnicalIndicators ta = taService.analyze(symbol, market).orElse(null);
+            FundamentalData fd = fundamentalService.analyze(symbol, market).orElse(null);
+            MacroData macro = macroService.getMacroData(market);
+            SentimentData sentiment = sentimentService.analyzeSentiment(symbol, market);
+
+            double[] context = featureExtractor.extract(symbol, market, quote, ta, fd, sentiment, macro)
+                    .toContextArray();
+            return onnxModelService.predict(context);
+        } catch (Exception e) {
+            log.warn("[Engine] ONNX prediction failed for {}: {}", symbol, e.getMessage());
             return Optional.empty();
         }
     }
