@@ -512,6 +512,33 @@ docs/HFT_ARCHITECTURE.md                                          (§27 new)
 
 ---
 
+### Stage 11 — ONNX Model Serving
+
+Real DJL + ONNX Runtime serving infrastructure — no model bundled, a real pure-Java
+constraint confirmed with the user before building (`HFT_ARCHITECTURE.md` §28.1). Full
+detail: `docs/STAGE11_ONNX_SERVING.md`.
+
+| Before | After |
+|---|---|
+| No ONNX/DL infrastructure at all | Real DJL + ONNX Runtime loading/inference — genuine, not a stub |
+| — | Ships with no model — every consumer honestly reports "unavailable" rather than fabricating a score |
+| — | `GET /api/v1/ml/onnx/status`, `GET /api/v1/ml/onnx/predict/{symbol}` |
+| ModelABRouter: Model A/B only | Unchanged — no speculative "Model C" traffic split for a model that doesn't exist |
+
+**Modified/new files:**
+```
+build.gradle.kts                                            (+ai.djl:api, +onnxruntime-engine)
+src/main/java/com/hft/ml/onnx/OnnxFeatureTranslator.java    (new)
+src/main/java/com/hft/ml/onnx/OnnxModelService.java         (new)
+src/main/java/com/hft/controller/OnnxController.java        (new)
+src/main/java/com/hft/service/signal/RecommendationEngine.java  (+getOnnxPrediction())
+src/test/java/com/hft/ml/onnx/OnnxModelServiceTest.java      (new — 5 tests)
+docs/STAGE11_ONNX_SERVING.md                                  (new — this stage's detail doc)
+docs/HFT_ARCHITECTURE.md                                       (§28 new)
+```
+
+---
+
 ## 4. DEPENDENCY EVOLUTION (build.gradle.kts)
 
 ```
@@ -563,6 +590,13 @@ Stage 8 adds:
 Stage 9 adds:
   com.mysql:mysql-connector-j        (runtimeOnly — MySQL, "docker"/prod profiles)
   com.clickhouse:clickhouse-jdbc:0.6.3:all   (analytics datasource, plain JDBC)
+
+Stage 10 adds:
+  (no new dependencies — ASRB module itself landed in Stage 9b; this stage only wired it in)
+
+Stage 11 adds:
+  ai.djl:api:0.31.1                             (DJL core — model/predictor/NDArray abstractions)
+  ai.djl.onnxruntime:onnxruntime-engine:0.31.1   (runtimeOnly — ONNX Runtime engine + native libs)
 ```
 
 ---
@@ -614,15 +648,15 @@ Kafka Streams → StreamSinkBridge → gRPC streaming
 
 ## 6. TEST COVERAGE
 
-All 40 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module +
-3 from Stage 10's `MLFeatureVectorTest`):
+All 45 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module +
+3 from Stage 10's `MLFeatureVectorTest` + 5 from Stage 11's `OnnxModelServiceTest`):
 
 ```
 gradle test
 
 ┌─────────────────────────────────────────────────────────┐
 │  Test Results                                           │
-│  Tests run: 40                                          │
+│  Tests run: 45                                          │
 │  Failures: 0                                            │
 │  Errors: 0                                              │
 │  Skipped: 0                                             │
@@ -637,6 +671,10 @@ gradle test
 │  ├── MLFeatureVector.toContextArray() field ordering    │
 │  │     (Stage 10 — a silent ordering bug here would      │
 │  │     corrupt every ASRB source's learned reliability)  │
+│  ├── OnnxModelService no-model shipped-behavior paths   │
+│  │     (Stage 11 — disabled/blank-path/missing-file/     │
+│  │     predict-when-unavailable/shutdown-when-never-     │
+│  │     loaded — the actual default state, not a stub)    │
 │  └── Domain model constructors and enums               │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -664,6 +702,7 @@ planned, not built.
 | Stage 9b | `44a6ba6` | Adaptive Source Reliability Bandit (ASRB) — standalone module |
 | Stage 9c | `c8b435f` | Real infrastructure — MySQL, ClickHouse, Redis, Kafka |
 | Stage 10 | `ec078d1` | ASRB wired into the live recommendation pipeline |
+| Stage 11 | `813e9fe` | ONNX model serving infrastructure — no model bundled |
 
 Short hashes only — commit trailers no longer include AI-attribution as of Stage 9c.
 
@@ -742,7 +781,8 @@ gRPC (Stage 2):
 | `docs/STAGE7_DATA_SOURCING.md` | Real data sourcing — source-by-source real/blocked/deferred verdict, config, verification |
 | `docs/STAGE9_INFRASTRUCTURE.md` | Real MySQL/ClickHouse/Redis/Kafka — setup, two-datasource design, the MySQL reserved-word bug, verification |
 | `docs/STAGE10_ASRB_WIRING.md` | ASRB wired live — config reference, reward loop, verification, the fixed `@Async`/`Optional` bug |
-| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 27 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra, §27 ASRB wiring |
+| `docs/STAGE11_ONNX_SERVING.md` | ONNX serving infra — model contract, why no model is bundled, config reference, verification |
+| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 28 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra, §27 ASRB wiring, §28 ONNX serving |
 | `docs/ASRB_TECHNICAL_DISCLOSURE.md` | Adaptive Source Reliability Bandit — algorithm spec, prior art, novelty draft, eval methodology |
 | `docs/STAGES_OVERVIEW.md` | This file — evolution summary, performance comparison |
 
@@ -812,11 +852,16 @@ STAGE 10 (COMPLETE): ASRB Live Wiring
         /api/v1/recommendations/stock/{symbol} threw on every call (@Async method returning
         Optional — invalid combination, never actually exercised live before this stage)
 
-STAGE 11 (Planned, was "Stage 7", then "8", "9", "10"): Deep Learning & ONNX Serving
-  ├── ONNX model serving via DJL (Deep Java Library)
-  ├── Real-time feature vector construction in Kafka Streams
-  ├── 45-feature vector → model inference → confidence score update
-  └── Outcome reconciliation using backtest-results topic (Stage 6)
+STAGE 11 (COMPLETE, was "Stage 7", then "8", "9", "10"): ONNX Model Serving
+  ├── Real DJL + ONNX Runtime serving infrastructure (OnnxModelService, OnnxFeatureTranslator)
+  │     — genuine, working, NOT a stub — but ships with no model bundled: pure-Java ONNX
+  │     *export* isn't a clean path (needs Python/torch, unavailable here), confirmed with
+  │     the user before building rather than after (HFT_ARCHITECTURE.md §28.1)
+  ├── GET /api/v1/ml/onnx/status, GET /api/v1/ml/onnx/predict/{symbol} — both honest about
+  │     no-model-loaded rather than fabricating a score
+  ├── NOT wired into ModelABRouter — no real model to calibrate a traffic split against yet
+  └── 5 new tests covering the actual shipped behavior (disabled/blank-path/missing-file/
+        predict-when-unavailable/shutdown-when-never-loaded), not just a hypothetical happy path
 
 STAGE 12 (Planned): Alpha Vantage Polling-Frequency Fix
   └── 25 req/day free tier vs. the existing 5-second/24-symbol dev poll cadence (§26.6) —

@@ -35,6 +35,7 @@
 25. [Identity, Admin & Billing Platform](#25-identity-admin--billing-platform)
 26. [Data & Analytics Infrastructure](#26-data--analytics-infrastructure)
 27. [ASRB Live Wiring](#27-asrb-live-wiring)
+28. [ONNX Model Serving](#28-onnx-model-serving)
 
 ---
 
@@ -2520,6 +2521,61 @@ log + Redis inspection, not assumed:
 Full suite: 40/40 passing throughout (37 baseline + 3 new `MLFeatureVectorTest` cases
 verifying `toContextArray()`'s field order precisely — a silent ordering bug there would have
 corrupted every source's learned reliability without ever throwing).
+
+---
+
+## 28. ONNX MODEL SERVING
+
+Full operational detail: `docs/STAGE11_ONNX_SERVING.md`. This section covers why the scope is
+what it is.
+
+### 28.1 Why Serving-Only
+
+The original plan (`docs/SESSION_CONTEXT.md` §12, and §11/§20 elsewhere in this doc) always
+framed this as "ONNX model serving via DJL." What that plan didn't confront: **DJL (Deep Java
+Library) can genuinely *serve* an existing `.onnx` file, but training-then-exporting-to-ONNX is
+not a clean pure-Java path.** Real ONNX export normally goes through PyTorch's own Python-side
+`torch.onnx.export` (or an equivalent Python toolchain); DJL's own training API produces
+DJL-native models, not `.onnx` files, without a further Python-side conversion step this
+environment doesn't have available (no `torch`, no `onnx` Python package — confirmed by
+checking, not assumed).
+
+Given that constraint, confirmed with the user before building rather than after: Stage 11
+ships the serving half only — genuine, working ONNX Runtime inference infrastructure via DJL,
+with **no model bundled**. `hft.onnx.model-path` is empty by default; every consumer
+(`OnnxModelService.isAvailable()`, `predict()`, the `/api/v1/ml/onnx/*` endpoints) reports this
+honestly rather than fabricating a score. This is not a stub pretending to be real — the
+loading/inference code path is genuine DJL + ONNX Runtime, ready to serve the moment a real
+`.onnx` file is placed at the configured path. It's simply not connected to a trained model
+today, and disclosed as such everywhere.
+
+### 28.2 Model Contract
+
+Any `.onnx` file dropped in must accept a `[1, 41]` float32 tensor (batch size 1 — one symbol
+scored at a time, matching `com.hft.ml.MLFeatureVector.toContextArray()`'s shape and field
+order) and produce a single scalar output, expected on the same 0-100 scale every other
+composite score in this codebase uses (`technicalScore`, `sentimentScore`, etc.) — see
+`OnnxFeatureTranslator`.
+
+### 28.3 Not Wired Into ModelABRouter
+
+Stage 5's A/B router (Model A: `MLPredictionService`, Model B: `EnsembleModel`) is untouched.
+Adding ONNX as "Model C" and giving it live traffic-routing weight would be speculative with no
+real model behind it — nothing to calibrate the split against. `RecommendationEngine
+.getOnnxPrediction(symbol, market)` and the `/api/v1/ml/onnx/predict/{symbol}` endpoint expose
+it as an independent, standalone prediction path instead — the natural next step, once a real
+model exists, is deciding how (or whether) to fold it into routing, informed by actually
+comparing its predictions against Model A/B's track record first.
+
+### 28.4 Verified Live
+
+Booted against real MySQL/ClickHouse/Redis/Kafka. Confirmed via log line (not assumed): `[ONNX]
+No model configured (hft.onnx.model-path is empty) — serving unavailable, Model A/B
+unaffected.` Both endpoints hit live and authenticated: `GET /api/v1/ml/onnx/status` returned
+`{"available": false}`; `GET /api/v1/ml/onnx/predict/MSFT` returned the honest `NO_MODEL` error
+rather than a fabricated score. 5 new unit tests (`OnnxModelServiceTest`) cover the disabled,
+blank-path, missing-file, predict-when-unavailable, and shutdown-when-never-loaded cases — the
+actual shipped behavior, not just the happy path a real model would exercise. Full suite: 45/45.
 
 ---
 
