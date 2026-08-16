@@ -539,6 +539,31 @@ docs/HFT_ARCHITECTURE.md                                       (§28 new)
 
 ---
 
+### Stage 12 — Alpha Vantage Call Budget
+
+Two root causes, not one — full detail: `docs/STAGE12_ALPHA_VANTAGE_BUDGET.md`,
+`HFT_ARCHITECTURE.md` §29.
+
+| Before | After |
+|---|---|
+| `pollUSMarket()` evicted the entire quote cache every 5s cycle | Removed — `getQuote()`'s existing 30s `@Cacheable` TTL now actually works |
+| No shared awareness of Alpha Vantage's 25/day total budget across 3 call sites | `AlphaVantageBudgetGuard` — shared counter, exhausted days fail closed locally |
+| Dev poll interval 5000ms (faster than its own cache TTL) | 60000ms |
+| Stale "500/day" comment, stale Yahoo Finance/BSE India failover claim | Both corrected |
+
+**Modified/new files:**
+```
+src/main/java/com/hft/service/data/AlphaVantageBudgetGuard.java   (new)
+src/main/java/com/hft/service/data/AlphaVantageService.java       (guard checks)
+src/main/java/com/hft/service/analysis/SentimentAnalysisService.java  (guard check)
+src/main/java/com/hft/service/data/MarketDataAggregatorService.java   (@CacheEvict removed)
+src/test/java/com/hft/service/data/AlphaVantageBudgetGuardTest.java   (new — 4 tests)
+docs/STAGE12_ALPHA_VANTAGE_BUDGET.md                                   (new — this stage's detail doc)
+docs/HFT_ARCHITECTURE.md                                               (§29 new)
+```
+
+---
+
 ## 4. DEPENDENCY EVOLUTION (build.gradle.kts)
 
 ```
@@ -597,6 +622,9 @@ Stage 10 adds:
 Stage 11 adds:
   ai.djl:api:0.31.1                             (DJL core — model/predictor/NDArray abstractions)
   ai.djl.onnxruntime:onnxruntime-engine:0.31.1   (runtimeOnly — ONNX Runtime engine + native libs)
+
+Stage 12 adds:
+  (no new dependencies — AlphaVantageBudgetGuard is pure Java, java.time.Clock only)
 ```
 
 ---
@@ -648,15 +676,16 @@ Kafka Streams → StreamSinkBridge → gRPC streaming
 
 ## 6. TEST COVERAGE
 
-All 45 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module +
-3 from Stage 10's `MLFeatureVectorTest` + 5 from Stage 11's `OnnxModelServiceTest`):
+All 49 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module +
+3 from Stage 10's `MLFeatureVectorTest` + 5 from Stage 11's `OnnxModelServiceTest` + 4 from
+Stage 12's `AlphaVantageBudgetGuardTest`):
 
 ```
 gradle test
 
 ┌─────────────────────────────────────────────────────────┐
 │  Test Results                                           │
-│  Tests run: 45                                          │
+│  Tests run: 49                                          │
 │  Failures: 0                                            │
 │  Errors: 0                                              │
 │  Skipped: 0                                             │
@@ -675,6 +704,9 @@ gradle test
 │  │     (Stage 11 — disabled/blank-path/missing-file/     │
 │  │     predict-when-unavailable/shutdown-when-never-     │
 │  │     loaded — the actual default state, not a stub)    │
+│  ├── AlphaVantageBudgetGuard exhaustion/reset/never-     │
+│  │     throws (Stage 12, deterministic via injectable    │
+│  │     Clock — no real day-boundary waiting needed)      │
 │  └── Domain model constructors and enums               │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -703,6 +735,7 @@ planned, not built.
 | Stage 9c | `c8b435f` | Real infrastructure — MySQL, ClickHouse, Redis, Kafka |
 | Stage 10 | `ec078d1` | ASRB wired into the live recommendation pipeline |
 | Stage 11 | `813e9fe` | ONNX model serving infrastructure — no model bundled |
+| Stage 12 | `853c799` | Alpha Vantage call budget — two root causes, not one |
 
 Short hashes only — commit trailers no longer include AI-attribution as of Stage 9c.
 
@@ -782,7 +815,8 @@ gRPC (Stage 2):
 | `docs/STAGE9_INFRASTRUCTURE.md` | Real MySQL/ClickHouse/Redis/Kafka — setup, two-datasource design, the MySQL reserved-word bug, verification |
 | `docs/STAGE10_ASRB_WIRING.md` | ASRB wired live — config reference, reward loop, verification, the fixed `@Async`/`Optional` bug |
 | `docs/STAGE11_ONNX_SERVING.md` | ONNX serving infra — model contract, why no model is bundled, config reference, verification |
-| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 28 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra, §27 ASRB wiring, §28 ONNX serving |
+| `docs/STAGE12_ALPHA_VANTAGE_BUDGET.md` | The two root causes (cache-evict bug + no shared budget), the fix, verification |
+| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 29 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra, §27 ASRB wiring, §28 ONNX serving, §29 AV budget |
 | `docs/ASRB_TECHNICAL_DISCLOSURE.md` | Adaptive Source Reliability Bandit — algorithm spec, prior art, novelty draft, eval methodology |
 | `docs/STAGES_OVERVIEW.md` | This file — evolution summary, performance comparison |
 
@@ -863,10 +897,16 @@ STAGE 11 (COMPLETE, was "Stage 7", then "8", "9", "10"): ONNX Model Serving
   └── 5 new tests covering the actual shipped behavior (disabled/blank-path/missing-file/
         predict-when-unavailable/shutdown-when-never-loaded), not just a hypothetical happy path
 
-STAGE 12 (Planned): Alpha Vantage Polling-Frequency Fix
-  └── 25 req/day free tier vs. the existing 5-second/24-symbol dev poll cadence (§26.6) —
-        needed before Alpha Vantage-sourced data (including ASRB's alpha-vantage-news source)
-        can be relied on consistently rather than exhausted within the first minute of boot
+STAGE 12 (COMPLETE): Alpha Vantage Call Budget
+  ├── Found a SECOND root cause beyond the known 24-symbols-vs-25/day problem:
+  │     pollUSMarket() carried @CacheEvict(allEntries=true), wiping getQuote()'s own 30s
+  │     @Cacheable TTL before every 5s poll cycle — removed, @Cacheable now actually works
+  ├── AlphaVantageBudgetGuard — shared daily counter across all 3 call sites that draw on
+  │     the SAME account-level quota (GLOBAL_QUOTE, NEWS_SENTIMENT, TIME_SERIES_DAILY_ADJUSTED)
+  ├── Dev poll interval 5000ms -> 60000ms (was already faster than its own cache TTL)
+  └── Live-verified: exactly 20 real GLOBAL_QUOTE calls fired (matching the configured
+        budget), then the guard transparently blocked the remaining 4 with zero further
+        HTTP round-trips — confirmed via log count, not assumed
 
 ALSO DESIGNED (docs/HFT_ARCHITECTURE.md §24.3), not yet built, no stage number assigned:
   └── Per-user BYOC ConnectedAccount (§24.3, §25 identity foundation exists from Stage 8) —

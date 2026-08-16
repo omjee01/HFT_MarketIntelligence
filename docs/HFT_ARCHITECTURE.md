@@ -36,6 +36,7 @@
 26. [Data & Analytics Infrastructure](#26-data--analytics-infrastructure)
 27. [ASRB Live Wiring](#27-asrb-live-wiring)
 28. [ONNX Model Serving](#28-onnx-model-serving)
+29. [Alpha Vantage Call Budget](#29-alpha-vantage-call-budget)
 
 ---
 
@@ -2576,6 +2577,69 @@ unaffected.` Both endpoints hit live and authenticated: `GET /api/v1/ml/onnx/sta
 rather than a fabricated score. 5 new unit tests (`OnnxModelServiceTest`) cover the disabled,
 blank-path, missing-file, predict-when-unavailable, and shutdown-when-never-loaded cases — the
 actual shipped behavior, not just the happy path a real model would exercise. Full suite: 45/45.
+
+---
+
+## 29. ALPHA VANTAGE CALL BUDGET
+
+Full operational detail: `docs/STAGE12_ALPHA_VANTAGE_BUDGET.md`. This section covers the root
+causes §26.6 first flagged and how each was actually fixed.
+
+### 29.1 Two Root Causes, Not One
+
+§26.6 documented the symptom (Alpha Vantage's daily quota exhausted within a minute of boot)
+and named the obvious cause — 24 watchlist symbols against a 25-request/day free tier. Tracing
+it further for this stage surfaced a second, independent, larger cause:
+`MarketDataAggregatorService.pollUSMarket()` carried `@CacheEvict(value = CACHE_QUOTES,
+allEntries = true)` — wiping `getQuote()`'s own 30-second `@Cacheable` TTL immediately before
+*every* poll cycle. At the prior 5-second poll interval, that meant every single cycle forced a
+real provider call for all 24 symbols regardless of how recently each had actually been
+fetched — roughly a 6x amplification on top of the already-tight per-symbol-count problem
+before any budget guard existed. Removed; `@Cacheable` now does its actual job.
+
+### 29.2 The Fix Has Three Parts, Not One
+
+1. **Remove the `@CacheEvict` bug** (§29.1) — restores the existing cache to actually working.
+2. **`AlphaVantageBudgetGuard`** — a shared daily counter (`hft.alpha-vantage.daily-call-budget`,
+   default 20, leaving headroom under the real 25/day cap) consulted by all three Alpha
+   Vantage call sites that share the SAME account-level quota: `AlphaVantageService.getQuote()`
+   (GLOBAL_QUOTE), `.getHistoricalData()` (TIME_SERIES_DAILY_ADJUSTED), and
+   `SentimentAnalysisService.fetchAlphaVantageNews()` (NEWS_SENTIMENT) — confirmed via Alpha
+   Vantage's own rate-limit response text that the budget is shared across every function, not
+   per-function. Once exhausted for the day, further calls are skipped locally — no wasted
+   round-trip to get back the same rate-limit message. In-memory, single-instance (this
+   platform has only ever run as one instance); would need a shared store (Redis, matching the
+   pattern already used elsewhere) to coordinate across multiple nodes sharing one API key —
+   not built here since there's nothing to coordinate yet.
+3. **Saner poll interval** — `application-dev.yml`'s `market-data-poll-ms` raised from 5000 to
+   60000. The prior value was already faster than the 30s cache TTL it sits above, so even with
+   the cache fixed, sub-30s polling was pure waste; the guard is the real backstop regardless
+   of this value, this just removes needless CPU/log churn once budget is spent for the day.
+
+### 29.3 Two Other Stale Comments Fixed While Here
+
+`hft.alpha-vantage.rate-limit-per-minute`'s comment said "500/day" — wrong; confirmed directly
+against Alpha Vantage's own response (§26.6) that the free tier is 25/day. And
+`MarketDataAggregatorService`'s class javadoc claimed a "Alpha Vantage → Yahoo Finance" and
+"NSE India → BSE India" failover chain — neither Yahoo Finance nor BSE India has an actual
+`MarketDataService` implementation; only `AlphaVantageService` and `NSEIndiaService` exist. The
+`yahoo-finance`/`bse` config blocks in `application.yml` predate real integration and currently
+have no effect. Both corrected in place rather than left to mislead the next reader.
+
+### 29.4 Verified Live
+
+Booted against real MySQL/ClickHouse/Redis/Kafka. The scheduled poller iterated the 24-symbol
+US watchlist; confirmed via log count (not assumed) that exactly 20 real `GLOBAL_QUOTE` HTTP
+calls went out — matching `daily-call-budget: 20` precisely — followed by exactly one
+`AlphaVantageBudgetGuard` exhaustion log line, after which the remaining 4 watchlist symbols
+were still attempted by the aggregator (as expected — the guard doesn't change the polling
+loop) but generated zero further HTTP calls, confirmed by the call count staying at 20. The
+underlying Alpha Vantage *account* quota was already spent for the day from earlier testing
+this session — expected and unrelated to this fix, which caps *this process's* calls and can't
+retroactively know about consumption from prior separate runs. 4 new unit tests
+(`AlphaVantageBudgetGuardTest`, using an injectable `Clock` to test day-rollover deterministically)
+cover exhaustion, remaining-count accuracy, day-rollover reset, and that it never throws. Full
+suite: 49/49.
 
 ---
 
