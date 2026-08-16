@@ -33,6 +33,7 @@
 23. [Web UI Architecture](#23-web-ui-architecture)
 24. [Intelligence Sourcing & Adaptive Fusion (ASRB)](#24-intelligence-sourcing--adaptive-fusion-asrb)
 25. [Identity, Admin & Billing Platform](#25-identity-admin--billing-platform)
+26. [Data & Analytics Infrastructure](#26-data--analytics-infrastructure)
 
 ---
 
@@ -2282,9 +2283,126 @@ account credentials.
 
 ### 25.4 Test User
 
-Until this stage is implemented, there is no functioning login. Once built, **PTD2315**
-(git identity on this repo) / **omanu01@gmail.com** is the designated first seed user, with
-both USER and ADMIN roles, for testing the connected-account flow end to end.
+Implemented (Stage 8). **PTD2315** (git identity on this repo) / **omanu01@gmail.com** is
+seeded on boot by `TestUserSeeder`, with both USER and ADMIN roles — `hft.identity.seed-test-user.enabled`
+(default `true`, forced `false` in `application-prod.yml`). Idempotent: skips if the username
+already exists, so the seeded password is stable across restarts **as long as the identity
+table itself persists** — true once §26's MySQL datasource is in use, not true on plain H2
+`dev` (`ddl-auto: create-drop` wipes and reseeds, with a freshly generated password, every
+boot). The generated password is logged at WARN on the boot where seeding actually happens;
+it is never written to a file or committed anywhere.
+
+---
+
+## 26. DATA & ANALYTICS INFRASTRUCTURE
+
+### 26.1 Why Two Datasources
+
+Through Stage 9b, "infrastructure" meant H2 in-memory (dev), Kafka with `auto-startup: false`
+in dev (fine, no broker required), and `cache.type: simple`. Nothing was actually running
+outside the JVM. Stage 9c makes it real: MySQL for everything JPA already modeled (identity,
+IPO data, trade recommendations, backtests, platform credentials — all the entities in
+§11), and a second, deliberately non-JPA store for analytics.
+
+The second store exists because JPA/Hibernate assumes a row-oriented engine with real
+per-row UPDATE/DELETE inside transactions — the exact opposite of what a fast time-series
+analytical store should be. ClickHouse's MergeTree engine is columnar and append-optimized
+(the "fastest read/write for high-volume financial data" property this stage was asked to
+provide); modeling it through Hibernate would fight the tool. So `com.hft.analytics` talks to
+it with plain `JdbcTemplate` instead — no entities, no repositories, just SQL.
+
+### 26.2 Two-DataSource Wiring
+
+`com.hft.config.DatabaseConfig` explicitly declares what Spring Boot would otherwise
+autoconfigure implicitly:
+
+```
+primaryDataSourceProperties()  @Primary @ConfigurationProperties("spring.datasource")
+primaryDataSource()            @Primary — built from those properties via
+                                DataSourceProperties.initializeDataSourceBuilder(), not a bare
+                                DataSourceBuilder.create().build(). The bare form skips the
+                                vendor-aware "url" -> "jdbcUrl" translation Hikari needs — it
+                                binds spring.datasource.url onto the constructed
+                                HikariDataSource looking for a setUrl() method that doesn't
+                                exist, so the pool starts with no JDBC URL at all and fails
+                                validation. Cost me one full boot cycle to find; documented
+                                here so it isn't rediscovered the hard way twice.
+clickHouseDataSource()         @ConditionalOnProperty(hft.clickhouse.enabled) — plain Hikari
+                                pool pointed at hft.clickhouse.jdbc-url/username/password
+clickHouseJdbcTemplate()       wraps it, @Qualifier("clickHouseDataSource") explicitly — with
+                                two DataSource beans in the context and one marked @Primary,
+                                an unqualified injection point resolves to the primary one
+                                regardless of parameter name; relying on name-matching alone
+                                here would have silently pointed the ClickHouse JdbcTemplate at
+                                MySQL
+```
+
+The moment a second `DataSource` bean exists, `primaryDataSource()` marked `@Primary` stops
+being optional — every unqualified `DataSource`/`JdbcTemplate` injection point in the app,
+including inside Spring Data JPA's own autoconfiguration, becomes ambiguous without it.
+
+`hft.clickhouse.enabled` defaults to `false` in the base `application.yml` and is only `true`
+in the `docker` and `prod` profiles — plain `dev` (what `gradle test` runs under) never
+attempts a ClickHouse connection.
+
+### 26.3 ClickHouse Schema
+
+`ClickHouseSchemaInitializer` (`ApplicationRunner`, same conditional gate) creates three
+MergeTree tables on boot, each partitioned by month and ordered by `(symbol, time)` — the
+standard layout for append-only financial time series:
+
+| Table | Status | Written by |
+|---|---|---|
+| `trade_signals` | **Live** | `ClickHouseSignalSink` — mirrors every `signals-ml-scored` Kafka message |
+| `candles_1m` | Schema-only | nothing yet — ready for a future OHLCV/candle producer |
+| `market_ticks` | Schema-only | nothing yet — ready for a future raw-tick producer |
+
+`ClickHouseSignalSink` runs as its own Kafka consumer group (`hft-clickhouse-sink`), separate
+from the existing `signals-ml-scored -> backtest-results` passthrough (§16, Processor 5) —
+it's a read-only mirror onto a second sink, not a change to the existing topology. Best-effort:
+a failed insert is logged and dropped, not retried. The primary MySQL/H2 `trade_recommendations`
+row remains the system of record; ClickHouse is the fast-query analytics copy, not a second
+source of truth.
+
+### 26.4 Local Topology
+
+`docker-compose.yml` — MySQL 8.0, ClickHouse 24.8, Redis 7, Kafka (`apache/kafka`, KRaft mode,
+no ZooKeeper). Host ports 3307 (MySQL) and 6380 (Redis) instead of the defaults 3306/6379 —
+both were already bound by unrelated services on the machine this was built on; container-
+internal ports are untouched, so this is purely a host-side mapping detail. Bring up with
+`docker compose up -d --wait`; run the app with `SPRING_PROFILES_ACTIVE=dev,docker,secrets`
+(`docker` layers real infra on top of `dev` rather than replacing it, so `gradle test` and a
+plain `dev` boot are completely unaffected by any of this).
+
+### 26.5 A Bug This Surfaced: MySQL Reserved Words
+
+H2 and MySQL disagree on what counts as a reserved word. `TradeRecommendation.signal` /
+`.rank` and `BacktestTrade.signal` mapped to unquoted columns named `signal` and `rank` —
+both fine on H2, both MySQL 8 reserved words (`SIGNAL` the statement, `RANK()` the window
+function). The first real MySQL boot failed `trade_recommendations`' own `CREATE TABLE`,
+which cascaded into every table with a foreign key back to it (`backtest_trades`'s own create
+succeeded but its FK constraint couldn't attach). Fixed with explicit
+`@Column(name = "signal_type" / "reco_rank")` overrides — plus, for `TradeRecommendation`,
+updating the `@Index(columnList = "market, signal")` string to match, since Hibernate does not
+retroactively rewrite a raw index column-list when a field's `@Column` name changes. Verified
+clean against a freshly dropped-and-recreated MySQL schema: zero DDL errors.
+
+### 26.6 Alpha Vantage — Real Key, Real Limits
+
+`hft.alpha-vantage.api-key` now resolves to a real key via the git-ignored `secrets` profile
+(`application-secrets.yml`, activate with `SPRING_PROFILES_ACTIVE=...,secrets` — never
+committed). Confirmed genuinely valid by calling Alpha Vantage directly outside the app.
+Inside the app, though, every quote request came back empty from the very first call — not
+gradual exhaustion. Direct cause, confirmed via a raw curl to the endpoint: Alpha Vantage's
+free tier is **25 requests/day, total, across all functions** — far stricter than the
+`rate-limit-per-minute: 5` config already in `application.yml` accounts for — and dev's
+5-second market-data poll cycle across ~24 US symbols burns through that allowance in under a
+minute. This is a pre-existing polling-frequency assumption from before Alpha Vantage was
+wired to a real (vs. `demo`) key, not something this stage introduced; it's now visible for
+the first time because there's finally a real key to exhaust. Not fixed here — needs a
+decision (poll less often when Alpha Vantage is the active provider, demote it behind the
+unlimited Yahoo Finance/NSE sources that already cover the same US-market surface, or accept
+a paid tier) rather than a silent workaround.
 
 ---
 

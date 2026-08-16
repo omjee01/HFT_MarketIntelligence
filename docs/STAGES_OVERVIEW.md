@@ -403,6 +403,88 @@ docs/STAGES_OVERVIEW.md                                                 (this fi
 
 ---
 
+### Stage 8 — Identity, Admin Platform & Web UI
+
+The platform had no login and no UI before this stage — every prior stage was verified via
+curl/grpcurl only. This adds real JWT auth (access + refresh tokens, `com.auth0:java-jwt`),
+an admin-managed platform-credential store (AES-256-GCM at rest), and a static, no-build-step
+web UI with a 3-state Light/Dark/Auto theme.
+
+| Before | After |
+|---|---|
+| No login, no user concept | `com.hft.identity` — User/Role, JwtService, JwtAuthFilter, `/api/v1/auth/register\|login\|refresh\|me` |
+| `SecurityConfig`'s JWT filter was scaffolding — no filter class existed | Real `JwtAuthFilter` (`OncePerRequestFilter`), wired via `addFilterBefore` |
+| API keys only settable via env vars | `com.hft.admin` — `AdminSettingsController`, write-only, encrypted at rest, never echoes raw values |
+| No UI at all | `src/main/resources/static/` — vanilla HTML/CSS/JS, mobile/tablet/desktop responsive |
+
+**Modified/new files:**
+```
+src/main/java/com/hft/identity/           (new — User, Role, JwtService, JwtAuthFilter, AuthService,
+                                            AuthController, TestUserSeeder, exceptions)
+src/main/java/com/hft/admin/              (new — PlatformApiCredential, CredentialCipher,
+                                            PlatformSettingsService, AdminSettingsController)
+src/main/java/com/hft/config/SecurityConfig.java   (JwtAuthFilter wired in; auth endpoints made public)
+src/main/resources/static/                (new — index.html, css/, js/)
+```
+
+Verified end-to-end in a real Chrome browser, not just unit/compile-verified: login, a live
+MSFT recommendation rendered from genuinely live Alpha Vantage/NewsAPI/SEC EDGAR data, the
+admin credential save/clear round-trip, and theme cycling.
+
+---
+
+### Stage 9 — IPO Engine, ASRB & Real Infrastructure
+
+Three sub-stages, one commit each (9a/9b/9c) — grouped under one stage number because they
+landed in the same session and share a common thread: everything the platform does for
+already-listed stocks now also exists for IPOs, a genuinely novel fusion algorithm exists
+(if not yet wired live), and the infrastructure config files stop describing services that
+don't actually run anywhere.
+
+**9a — IPO Buy/Sell Decision Engine** (`docs/HFT_ARCHITECTURE.md` §22): Phase 1 pre-listing
+composite scoring (Valuation/Demand/Quality/Sentiment → APPLY_STRONG/APPLY/RISKY/AVOID) and
+Phase 2 post-listing lifecycle (Day 0 flip/hold/sell, Days 1–19 reduced scoring, Day 20+
+graduates to the main `RecommendationEngine`). `GET /api/v1/ipo/recommendations[/{symbol}]`
+plus GraphQL equivalents. Verified live against 3 seeded sample IPOs, each scoring correctly
+and distinctly (APPLY / AVOID / RISKY). Found and fixed a real bug in the original §22.2 spec
+during verification — the RISKY override's `valuationScore < 30` threshold was mathematically
+unreachable (the formula's own floor is exactly 30); corrected to `RICH_VALUATION_THRESHOLD = 40`.
+
+**9b — Adaptive Source Reliability Bandit** (`docs/ASRB_TECHNICAL_DISCLOSURE.md`): the
+correlation-/misinformation-aware source-fusion algorithm, built as a standalone module
+(`com.hft.intelligence`) with 13 passing tests. Deliberately **not wired into the live
+pipeline yet** — that's a separate decision (calibration data needed first).
+
+**9c — Real Infrastructure** (`docs/HFT_ARCHITECTURE.md` §26, `docs/STAGE9_INFRASTRUCTURE.md`):
+MySQL, ClickHouse, Redis, and Kafka actually running via Docker Compose, replacing what had
+been H2-in-memory + no-broker + simple-cache everywhere. New `docker` Spring profile layers
+this on top of `dev` rather than replacing it — `gradle test` and plain `dev` still run on H2
+with zero external dependencies. Surfaced and fixed a real bug along the way: `signal`/`rank`
+columns that were silently fine on H2 turned out to be MySQL 8 reserved words.
+
+| Before | After |
+|---|---|
+| No IPO support at all | Full pre-/post-listing engine, live-verified |
+| ASRB existed only as a design doc | Built, tested, standalone (not yet wired live) |
+| H2 in-memory, no broker, `cache.type: simple` | Real MySQL/ClickHouse/Redis/Kafka via `docker` profile |
+| Alpha Vantage `demo` key | Real key — confirmed valid, free tier (25/day) far stricter than the app's polling assumed |
+
+**Modified/new files:**
+```
+src/main/java/com/hft/ipo/                          (new — IPOAnalysisService, IPOLifecycleScorer, SampleIpoSeeder)
+src/main/java/com/hft/controller/IPOController.java (new)
+src/main/java/com/hft/graphql/IPOResolver.java      (new)
+src/main/java/com/hft/intelligence/                 (new — ASRB, 7 classes + 13 tests, standalone)
+src/main/java/com/hft/analytics/                    (new — ClickHouseSchemaInitializer, ClickHouseSignalSink)
+src/main/java/com/hft/config/DatabaseConfig.java    (new — explicit @Primary + secondary ClickHouse datasource)
+docker-compose.yml, .env.example                    (new)
+src/main/resources/application-docker.yml           (new)
+docs/STAGE9_INFRASTRUCTURE.md                        (new — this stage's detail doc)
+docs/HFT_ARCHITECTURE.md                             (§22.2 threshold fix, §26 new)
+```
+
+---
+
 ## 4. DEPENDENCY EVOLUTION (build.gradle.kts)
 
 ```
@@ -414,7 +496,6 @@ Foundation:
   spring-kafka
   h2, postgresql
   lombok, jackson
-  jjwt (JWT)
 
 Stage 1 adds:
   spring-boot-starter-graphql
@@ -444,6 +525,17 @@ Stage 5 adds:
 Stage 6 adds:
   (no new dependencies — BacktestRunner computes TA inline from raw OHLCV using
    pure Java math; no DJL, ND4J, or external ML inference library required)
+
+Stage 7 adds:
+  (no new dependencies — new fetch methods reuse the existing OkHttp3/Jackson stack)
+
+Stage 8 adds:
+  com.auth0:java-jwt:4.4.0   (JWT issuance/verification — NOT jjwt, despite some older
+                               internal notes; this is the dependency actually in build.gradle.kts)
+
+Stage 9 adds:
+  com.mysql:mysql-connector-j        (runtimeOnly — MySQL, "docker"/prod profiles)
+  com.clickhouse:clickhouse-jdbc:0.6.3:all   (analytics datasource, plain JDBC)
 ```
 
 ---
@@ -495,14 +587,14 @@ Kafka Streams → StreamSinkBridge → gRPC streaming
 
 ## 6. TEST COVERAGE
 
-All 24 unit tests pass across all stages:
+All 37 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module):
 
 ```
 gradle test
 
 ┌─────────────────────────────────────────────────────────┐
 │  Test Results                                           │
-│  Tests run: 24                                          │
+│  Tests run: 37                                          │
 │  Failures: 0                                            │
 │  Errors: 0                                              │
 │  Skipped: 0                                             │
@@ -512,12 +604,16 @@ gradle test
 │  ├── RecommendationEngine (composite scoring)           │
 │  ├── JWT authentication filter                          │
 │  ├── REST controllers                                   │
+│  ├── ASRB (correlation, posterior, stability, policy —  │
+│  │     7 classes, Stage 9b)                              │
 │  └── Domain model constructors and enums               │
 └─────────────────────────────────────────────────────────┘
 ```
 
 Note: Kafka Streams topology, gRPC services, and GraphQL resolvers are excluded from unit
-tests (they require live infrastructure). Integration tests are planned in a future sprint.
+tests (they require live infrastructure) — Stage 9c's docker-compose stack now makes that
+infrastructure available locally, but no integration-test suite runs against it yet. Still
+planned, not built.
 
 ---
 
@@ -529,40 +625,42 @@ tests (they require live infrastructure). Integration tests are planned in a fut
 | Stage 2 | `294b8b4` | gRPC pipeline + proto schemas + ProtoMapper |
 | Stage 3 | `dfdff9a` | Kafka Streams topology + StreamSinkBridge |
 | Stage 4 | `adc400d` | Production hardening — Redis fan-out, gRPC TLS+auth, GraphQL limits, metrics |
-| Stage 5 | `a6c482a` | ML A/B routing — EnsembleModel, 41-feature vector, Processor 4, Mutation type |
-| Stage 6 | (pending) | Backtesting engine — BacktestRunner, StrategyMetrics, WalkForward, Processor 5 |
+| Stage 5 | `a40fc96` | ML A/B routing — EnsembleModel, 41-feature vector, Processor 4, Mutation type |
+| Stage 6 | `dee1c5d` | Backtesting engine — BacktestRunner, StrategyMetrics, WalkForward, Processor 5 |
+| Stage 7 | `35a6845` | Real intelligence data sourcing + admin-managed credential overrides |
+| Stage 8 | `a1dc644` | Identity & Auth platform + lightweight Web UI |
+| Stage 9a | `492ebd6` | IPO Buy/Sell Decision Engine — Phase 1 pre-listing scoring |
+| Stage 9b | `44a6ba6` | Adaptive Source Reliability Bandit (ASRB) — standalone module |
+| Stage 9c | `c8b435f` | Real infrastructure — MySQL, ClickHouse, Redis, Kafka |
+
+Short hashes only — commit trailers no longer include AI-attribution as of Stage 9c.
 
 ---
 
 ## 8. HOW TO RUN — ALL STAGES TOGETHER
 
-### Full Stack (with Kafka)
+### Full Stack (real MySQL/ClickHouse/Redis/Kafka — Stage 9c)
 
 ```bash
-# Terminal 1: Start Kafka
-docker-compose -f docker-compose-kafka.yml up -d
+docker compose up -d --wait                              # mysql, clickhouse, redis, kafka
 
-# Terminal 2: Start the application (all features enabled)
-gradle bootRun \
-  --args='--spring.profiles.active=dev --spring.kafka.streams.auto-startup=true'
+SPRING_PROFILES_ACTIVE=dev,docker,secrets gradle bootRun  # "secrets" only if
+                                                           # application-secrets.yml exists locally
 
-# Terminal 3: Open GraphiQL
 open http://localhost:8080/graphiql
-
-# Terminal 4: Test gRPC
 grpcurl -plaintext localhost:9090 list
-
-# Terminal 5: Produce test data
-kafka-console-producer --bootstrap-server localhost:9092 --topic market-data-raw
 ```
 
-### Dev Mode (without Kafka — default)
+See `docs/STAGE9_INFRASTRUCTURE.md` for the full setup, port map (note: MySQL 3307 and
+Redis 6380, not the defaults — see that doc for why), and verification steps.
+
+### Dev Mode (H2, no external services — default, what `gradle test` runs under)
 
 ```bash
 gradle bootRun --args='--spring.profiles.active=dev'
 # REST + GraphQL fully functional
 # gRPC starts on :9090
-# Kafka Streams NOT started (no broker needed)
+# Kafka Streams NOT started (no broker needed) — cache.type: simple, no Redis
 ```
 
 ---
@@ -584,6 +682,13 @@ JWT secret:
 API Keys (Alpha Vantage, NewsAPI, Twitter, Reddit, FRED):
   → Set as environment variables: ALPHA_VANTAGE_API_KEY=...
   → Never hardcoded in yml files
+  → Real Alpha Vantage key (Stage 9c) lives in application-secrets.yml, git-ignored
+
+docker-compose.yml (Stage 9c) credentials:
+  → Local-dev-only defaults, bound to localhost, not exposed beyond the machine
+  → Override via a git-ignored .env — see .env.example for the variable names
+  → Never reused for prod — application-prod.yml requires its own env vars with no
+    defaults (DATABASE_URL/USERNAME/PASSWORD, CLICKHOUSE_*, REDIS_PASSWORD, etc.)
 
 gRPC (Stage 2):
   → Plaintext in dev (port 9090, no TLS)
@@ -603,7 +708,8 @@ gRPC (Stage 2):
 | `docs/STAGE5_ML_PIPELINE.md` | ML pipeline — EnsembleModel, A/B routing, Processor 4, GraphQL Mutation, Prometheus |
 | `docs/STAGE6_BACKTESTING.md` | Backtesting engine — BacktestRunner algo, metrics reference, walk-forward, GraphQL guide |
 | `docs/STAGE7_DATA_SOURCING.md` | Real data sourcing — source-by-source real/blocked/deferred verdict, config, verification |
-| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 25 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin |
+| `docs/STAGE9_INFRASTRUCTURE.md` | Real MySQL/ClickHouse/Redis/Kafka — setup, two-datasource design, the MySQL reserved-word bug, verification |
+| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 26 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra |
 | `docs/ASRB_TECHNICAL_DISCLOSURE.md` | Adaptive Source Reliability Bandit — algorithm spec, prior art, novelty draft, eval methodology |
 | `docs/STAGES_OVERVIEW.md` | This file — evolution summary, performance comparison |
 
@@ -652,18 +758,24 @@ STAGE 8 (COMPLETE): Identity, Admin Platform & Web UI
         MSFT recommendation rendered from genuinely live Alpha Vantage/NewsAPI/SEC EDGAR data,
         admin credential save/clear round-trip, theme cycling) — not just unit/compile-verified
 
-STAGE 9 (Planned, was "Stage 7", then "Stage 8"): Deep Learning & ONNX Serving
+STAGE 9 (COMPLETE): IPO Engine, ASRB & Real Infrastructure
+  ├── 9a — IPO Buy/Sell Decision Engine (§22) — pre-listing apply/avoid, post-listing
+  │     hold/sell, live-verified against 3 seeded sample IPOs
+  ├── 9b — ASRB — Adaptive Source Reliability Bandit (§24, ASRB_TECHNICAL_DISCLOSURE.md) —
+  │     built + tested (13 tests), deliberately not wired into the live pipeline yet
+  └── 9c — Real MySQL/ClickHouse/Redis/Kafka via a new "docker" Spring profile (§26,
+        STAGE9_INFRASTRUCTURE.md), replacing H2-in-memory/no-broker/simple-cache; real
+        Alpha Vantage key wired in (25 req/day free tier — stricter than assumed)
+
+STAGE 10 (Planned, was "Stage 7", then "Stage 8", then "Stage 9"): Deep Learning & ONNX Serving
   ├── ONNX model serving via DJL (Deep Java Library)
   ├── Real-time feature vector construction in Kafka Streams
   ├── 45-feature vector → model inference → confidence score update
   └── Outcome reconciliation using backtest-results topic (Stage 6)
 
-ALSO DESIGNED (docs/HFT_ARCHITECTURE.md §22, §24), not yet built, no stage number assigned:
-  ├── IPO Buy/Sell Decision Engine (§22) — pre-listing apply/avoid, post-listing hold/sell — NEXT UP
-  ├── ASRB — Adaptive Source Reliability Bandit (§24, ASRB_TECHNICAL_DISCLOSURE.md) — the
-  │     correlation-/misinformation-aware fusion algorithm — NEXT UP, now that Stage 7's real
-  │     sources exist for it to weight
-  └── Per-user BYOC ConnectedAccount (§24.3, §25 identity foundation now exists from Stage 8) —
+ALSO DESIGNED (docs/HFT_ARCHITECTURE.md §24.3), not yet built, no stage number assigned:
+  ├── Wiring ASRB (9b) into the live recommendation pipeline — needs a calibration-data decision
+  └── Per-user BYOC ConnectedAccount (§24.3, §25 identity foundation exists from Stage 8) —
         a user linking their own read-only Twitter/Reddit account, pooled into the shared signal
 ```
 
