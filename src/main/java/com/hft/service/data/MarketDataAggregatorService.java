@@ -7,7 +7,6 @@ import com.hft.model.enums.Market;
 import com.hft.repository.StockQuoteRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -19,10 +18,12 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Orchestrates multiple market data providers with priority-based failover:
+ * Orchestrates market data providers with priority-based failover:
  *
- *   US Markets:      Alpha Vantage → Yahoo Finance → Cached data
- *   Indian Markets:  NSE India     → BSE India    → Cached data
+ *   US Markets:      Alpha Vantage → cached DB fallback (Yahoo Finance is configured in
+ *                    application.yml but has no MarketDataService implementation yet — the
+ *                    config predates the actual integration; only Alpha Vantage is real for US)
+ *   Indian Markets:  NSE India     → cached DB fallback (same story for BSE India)
  *
  * Acts as the single point of entry for all market data needs in the platform.
  */
@@ -115,12 +116,19 @@ public class MarketDataAggregatorService {
     // ─── Scheduled Polling ────────────────────────────────────────────────────
 
     /**
-     * Poll US market watchlist every 5 seconds during market hours.
+     * Poll US market watchlist every hft.scheduler.market-data-poll-ms during market hours.
      * Adjust to 500ms for real HFT with a premium API key.
+     *
+     * Stage 12: removed @CacheEvict(allEntries=true), which used to run before every single
+     * poll cycle — wiping getQuote()'s 30s @Cacheable TTL immediately below, every cycle,
+     * forcing a real provider call for all US_WATCHLIST.size() symbols regardless of how
+     * recently each was fetched. Combined with a 5s poll interval this alone burned Alpha
+     * Vantage's entire 25-req/day budget in seconds. Removing it lets @Cacheable do its actual
+     * job: within its TTL, repeated poll cycles now hit cache instead of the real provider.
+     * See docs/STAGE12_ALPHA_VANTAGE_BUDGET.md and AlphaVantageBudgetGuard for the rest of the fix.
      */
     @Scheduled(fixedDelayString = "${hft.scheduler.market-data-poll-ms:5000}")
     @Async("dataIngestionExecutor")
-    @CacheEvict(value = CacheConfig.CACHE_QUOTES, allEntries = true)
     public void pollUSMarket() {
         log.debug("[Poller] Refreshing US market quotes ({} symbols)", US_WATCHLIST.size());
         US_WATCHLIST.forEach(symbol -> {

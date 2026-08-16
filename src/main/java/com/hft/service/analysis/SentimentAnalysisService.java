@@ -8,6 +8,7 @@ import com.hft.config.CacheConfig;
 import com.hft.intelligence.AdaptiveSourceReliabilityBandit;
 import com.hft.intelligence.SourceReliabilityPosterior;
 import com.hft.intelligence.SourceSignal;
+import com.hft.service.data.AlphaVantageBudgetGuard;
 import com.hft.model.domain.SentimentData;
 import com.hft.model.enums.Market;
 import com.hft.model.enums.SentimentLabel;
@@ -69,6 +70,7 @@ public class SentimentAnalysisService {
     private final PlatformSettingsService platformSettingsService;
     private final AdaptiveSourceReliabilityBandit asrbBandit;
     private final StringRedisTemplate redisTemplate;
+    private final AlphaVantageBudgetGuard alphaVantageBudgetGuard;
 
     @Value("${hft.asrb.enabled:true}")
     private boolean asrbEnabled;
@@ -337,9 +339,12 @@ public class SentimentAnalysisService {
     // ─── Alpha Vantage News API ────────────────────────────────────────────────
 
     private List<String> fetchAlphaVantageNews(String symbol) {
+        List<String> headlines = new ArrayList<>();
+        // NEWS_SENTIMENT shares Alpha Vantage's single 25/day budget with GLOBAL_QUOTE and
+        // TIME_SERIES_DAILY_ADJUSTED (AlphaVantageService) — same guard, same shared counter.
+        if (!alphaVantageBudgetGuard.tryConsume()) return headlines;
         String url = String.format("%s?function=NEWS_SENTIMENT&tickers=%s&limit=20&apikey=%s",
                 alphaVantageUrl, symbol, alphaVantageKey);
-        List<String> headlines = new ArrayList<>();
         try {
             Request request = new Request.Builder().url(url).get().build();
             try (Response response = httpClient.newCall(request).execute()) {

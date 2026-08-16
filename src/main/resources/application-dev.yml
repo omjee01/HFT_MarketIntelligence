@@ -60,9 +60,12 @@ hft:
   reddit:
     enabled: ${REDDIT_ENABLED:true}     # safe: no-ops without REDDIT_CLIENT_ID/SECRET
 
-  # Slower polling in dev to avoid hitting API limits
+  # Slower polling in dev to avoid hitting API limits. 5000ms was the prior value, but that's
+  # faster than getQuote()'s own 30s @Cacheable TTL, so anything under 30s was already wasted
+  # poll cycles even before Stage 12's AlphaVantageBudgetGuard — raised to comfortably clear
+  # the cache TTL. The guard is the real backstop regardless of this value.
   scheduler:
-    market-data-poll-ms: 5000
+    market-data-poll-ms: 60000
 
 grpc:
   server:

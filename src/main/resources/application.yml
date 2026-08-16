@@ -111,8 +111,18 @@ hft:
   alpha-vantage:
     api-key: ${ALPHA_VANTAGE_API_KEY:demo}
     base-url: https://www.alphavantage.co/query
-    rate-limit-per-minute: 5          # Free tier: 5/min, 500/day
+    rate-limit-per-minute: 5          # free tier burst limit (~1 req/sec)
+    # Free tier is 25 requests/day, TOTAL, shared across every function (GLOBAL_QUOTE,
+    # NEWS_SENTIMENT, TIME_SERIES_DAILY_ADJUSTED) — confirmed directly against the API's own
+    # rate-limit response (see docs/STAGE9_INFRASTRUCTURE.md §6), not the "500/day" this
+    # comment used to (incorrectly) say. AlphaVantageBudgetGuard (Stage 12) enforces this;
+    # daily-call-budget leaves headroom below the hard 25 so occasional manual/ad-hoc calls
+    # against the same key don't get starved by the scheduled poller.
+    daily-call-budget: 20
 
+  # NOTE: configured but NOT actually implemented — no MarketDataService exists for this yet
+  # (only AlphaVantageService for US, NSEIndiaService for India). Left here as a placeholder
+  # for when/if a real Yahoo Finance integration is built; enabled:true has no effect today.
   yahoo-finance:
     base-url: https://query1.finance.yahoo.com
     enabled: true

@@ -39,6 +39,7 @@ public class AlphaVantageService implements MarketDataService {
 
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
+    private final AlphaVantageBudgetGuard budgetGuard;
 
     @Value("${hft.alpha-vantage.api-key}")
     private String apiKey;
@@ -62,6 +63,9 @@ public class AlphaVantageService implements MarketDataService {
     @CircuitBreaker(name = "alphaVantage", fallbackMethod = "getQuoteFallback")
     @RateLimiter(name = "alphaVantage")
     public Optional<StockQuote> getQuote(String symbol, Market market) {
+        if (!budgetGuard.tryConsume()) {
+            return Optional.empty();
+        }
         String url = String.format("%s?function=GLOBAL_QUOTE&symbol=%s&apikey=%s",
                 baseUrl, symbol, apiKey);
         try {
@@ -124,6 +128,9 @@ public class AlphaVantageService implements MarketDataService {
     public List<OHLCVData> getHistoricalData(String symbol, Market market,
                                               LocalDate from, LocalDate to,
                                               String interval) {
+        if (!budgetGuard.tryConsume()) {
+            return Collections.emptyList();
+        }
         // Choose function based on interval
         String function = "TIME_SERIES_DAILY_ADJUSTED";
         String outputSize = "full"; // 20 years of data
