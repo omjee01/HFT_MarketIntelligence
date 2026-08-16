@@ -254,6 +254,14 @@ hft:
     min-risk-reward-ratio: 2.0
     top-recommendations-count: 5
 
+  # Virtual portfolio tracker (Stage 13, §30) — never executes trades, only watches positions
+  # the user tells us they already bought elsewhere and alerts on target/stop-loss/deteriorating
+  # signal. monitor-poll-ms is a real cost tradeoff: each open position re-runs a full
+  # recommendation (real external API calls) every cycle — see PortfolioMonitorService.
+  portfolio:
+    monitor-enabled: true
+    monitor-poll-ms: 900000   # 15 min
+
   # Scheduling
   scheduler:
     market-data-poll-ms: 500

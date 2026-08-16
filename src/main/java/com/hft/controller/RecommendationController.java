@@ -5,6 +5,7 @@ import com.hft.model.dto.ApiResponse;
 import com.hft.model.dto.RecommendationRequest;
 import com.hft.model.dto.RecommendationResponse;
 import com.hft.model.enums.Market;
+import com.hft.model.enums.MarketCapTier;
 import com.hft.repository.TradeRecommendationRepository;
 import com.hft.service.analysis.MacroGeopoliticalService;
 import com.hft.service.signal.RecommendationEngine;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -65,6 +67,18 @@ public class RecommendationController {
 
         return ResponseEntity.ok(ApiResponse.success(response,
                 String.format("Generated %d recommendations", response.getTotalRecommendations())));
+    }
+
+    @GetMapping("/board")
+    @Operation(summary = "Dashboard default view (Stage 13)",
+               description = "Actionable recommendations grouped by market-cap tier (MEGA..MICRO, largest first), sorted by confidence descending within each tier.")
+    public ResponseEntity<ApiResponse<Map<MarketCapTier, List<TradeRecommendation>>>> getBoard(
+            @RequestParam(defaultValue = "US_NASDAQ") Market market) {
+
+        Map<MarketCapTier, List<TradeRecommendation>> board = engine.generateBoard(market);
+        int total = board.values().stream().mapToInt(List::size).sum();
+        return ResponseEntity.ok(ApiResponse.success(board,
+                String.format("%d recommendations across %d cap tiers", total, board.size())));
     }
 
     @GetMapping("/us")

@@ -214,6 +214,37 @@ public class RecommendationEngine {
         return all;
     }
 
+    /**
+     * Dashboard default view (Stage 13): every actionable (bullish or WATCH) recommendation in
+     * the watchlist, grouped by market-cap tier largest-first (MEGA..MICRO), sorted within each
+     * tier by confidence descending — highest-conviction picks surface first in each tier, as
+     * requested. Unlike generateTopRecommendations(), not capped to a fixed topN per call — the
+     * cap-tier groups are naturally small subsets of the watchlist, and truncating per-group
+     * would risk silently hiding a tier's picks entirely on a small watchlist.
+     */
+    public Map<MarketCapTier, List<TradeRecommendation>> generateBoard(Market market) {
+        List<String> watchlist = market.isUS()
+                ? marketData.getUSWatchlist()
+                : marketData.getIndiaWatchlist();
+
+        List<TradeRecommendation> scored = watchlist.parallelStream()
+                .map(symbol -> generateRecommendation(symbol, market))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .filter(r -> r.getSignal().isBullish() || r.getSignal() == SignalType.WATCH)
+                .collect(Collectors.toList());
+
+        Map<MarketCapTier, List<TradeRecommendation>> board = new LinkedHashMap<>();
+        for (MarketCapTier tier : MarketCapTier.values()) {   // MEGA..MICRO, largest-first
+            List<TradeRecommendation> tierPicks = scored.stream()
+                    .filter(r -> r.getMarketCapTier() == tier)
+                    .sorted(Comparator.comparingDouble(TradeRecommendation::getConfidencePercent).reversed())
+                    .collect(Collectors.toList());
+            if (!tierPicks.isEmpty()) board.put(tier, tierPicks);
+        }
+        return board;
+    }
+
     // ─── Recommendation Builder ───────────────────────────────────────────────
 
     private TradeRecommendation buildRecommendation(
@@ -246,6 +277,7 @@ public class RecommendationEngine {
                 .assetType(AssetType.STOCK)
                 .sector(sector)
                 .sectorOutlook(macro != null ? macro.getMacroSentiment() : "NEUTRAL")
+                .marketCapTier(MarketCapTier.fromMarketCap(quote.getMarketCap()))
                 .signal(signal)
                 .timeHorizon(TimeHorizon.fromDays(pred.getHoldingPeriodDays()))
                 .riskLevel(RiskLevel.fromRiskRewardAndConfidence(

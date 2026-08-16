@@ -60,6 +60,10 @@ public class TradeRecommendation {
     @Column(length = 20)
     private String sectorOutlook;          // "POSITIVE" / "NEUTRAL" / "NEGATIVE"
 
+    @Enumerated(EnumType.STRING)
+    @Column(length = 10)
+    private MarketCapTier marketCapTier;   // MEGA/LARGE/MID/SMALL/MICRO — dashboard grouping (Stage 13)
+
     // ─── Signal ───────────────────────────────────────────────────────────────
     // Explicit column name: "signal" is a MySQL reserved word (used by the SIGNAL
     // statement). H2 doesn't reserve it, so this was silently fine until MySQL.

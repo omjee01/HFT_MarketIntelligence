@@ -2,6 +2,7 @@ package com.hft.ml;
 
 import com.hft.model.domain.*;
 import com.hft.model.enums.Market;
+import com.hft.model.enums.MarketCapTier;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -139,14 +140,11 @@ public class MLFeatureExtractor {
         return 0.5;
     }
 
+    // 0=micro..4=mega — MarketCapTier's ordinal runs the opposite direction (0=MEGA..4=MICRO,
+    // largest-first, natural for display/sorting), so this flips it for the ML feature scale.
     private double marketCapClass(StockQuote q) {
-        if (q == null || q.getMarketCap() == null) return 2.0;
-        double mc = q.getMarketCap().doubleValue();
-        if (mc < 300_000_000)       return 0.0;
-        if (mc < 2_000_000_000)     return 1.0;
-        if (mc < 10_000_000_000.0)  return 2.0;
-        if (mc < 200_000_000_000.0) return 3.0;
-        return 4.0;
+        MarketCapTier tier = MarketCapTier.fromMarketCap(q != null ? q.getMarketCap() : null);
+        return 4 - tier.ordinal();
     }
 
     private double d(Double v, double fallback) { return v != null ? v : fallback; }

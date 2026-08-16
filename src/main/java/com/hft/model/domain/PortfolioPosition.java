@@ -32,6 +32,9 @@ public class PortfolioPosition {
         if (id == null) id = UUID.randomUUID().toString();
     }
 
+    @Column(nullable = false, length = 60)
+    private String username;               // owner — added Stage 13 (this entity predates Identity/Auth)
+
     @Column(nullable = false, length = 30)
     private String symbol;
 
