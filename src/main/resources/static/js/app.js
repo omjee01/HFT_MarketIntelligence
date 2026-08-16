@@ -3,6 +3,7 @@ import { getSession, clearSession, apiJson } from './api.js';
 import { renderLogin } from './auth.js';
 import { renderDashboard } from './views/dashboard.js';
 import { renderAdmin } from './views/admin.js';
+import { renderPortfolio } from './views/portfolio.js';
 
 const mount = document.getElementById('app');
 const navEl = document.getElementById('app-nav');
@@ -47,6 +48,8 @@ async function route() {
   updateChrome();
   if (hash === 'admin') {
     await renderAdmin(mount);
+  } else if (hash === 'portfolio') {
+    await renderPortfolio(mount);
   } else {
     await renderDashboard(mount);
   }

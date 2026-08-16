@@ -1,6 +1,13 @@
 import { apiJson } from '../api.js';
+import { showStockDetail, showIpoDetail } from './detail.js';
 
 const MARKETS = ['US_NASDAQ', 'US_NYSE', 'US_AMEX', 'INDIA_NSE', 'INDIA_BSE', 'INDIA_MCX'];
+
+const TIER_LABEL = { MEGA: 'Mega Cap', LARGE: 'Large Cap', MID: 'Mid Cap', SMALL: 'Small Cap', MICRO: 'Micro Cap' };
+const IPO_GROUP_ORDER = ['APPLY_STRONG', 'APPLY', 'RISKY', 'AVOID'];
+const IPO_GROUP_LABEL = {
+  APPLY_STRONG: 'Strong Apply', APPLY: 'Apply', RISKY: 'Risky', AVOID: 'Avoid',
+};
 
 function signalBadgeClass(signal) {
   if (!signal) return 'badge--neutral';
@@ -10,19 +17,94 @@ function signalBadgeClass(signal) {
   return 'badge--neutral';
 }
 
-function recoRow(r) {
-  return `
-    <div class="reco-row">
+function stockCard(r, onOpen) {
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = 'reco-card';
+  el.innerHTML = `
+    <div class="reco-row" style="border:none;padding:0;">
       <div class="reco-row__meta">
         <span class="reco-row__symbol">${r.symbol} <span class="badge ${signalBadgeClass(r.signal)}">${r.signal}</span></span>
-        <span class="text-muted">${r.companyName || ''} · ${r.market || ''}</span>
+        <span class="text-muted">${r.companyName || ''}</span>
       </div>
       <div class="reco-row__numbers">
         <div>Entry ${r.entryPrice ?? '—'} → Target ${r.targetPrice ?? '—'}</div>
         <div class="text-muted">${r.expectedProfitPercent != null ? r.expectedProfitPercent.toFixed(1) + '%' : '—'}
-          · conf ${r.confidencePercent != null ? Math.round(r.confidencePercent) : '—'}%</div>
+          · confidence ${r.confidencePercent != null ? Math.round(r.confidencePercent) : '—'}%</div>
       </div>
     </div>`;
+  el.addEventListener('click', () => onOpen(r));
+  return el;
+}
+
+function ipoCard(ipo, onOpen) {
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = 'reco-card';
+  el.innerHTML = `
+    <div class="reco-row" style="border:none;padding:0;">
+      <div class="reco-row__meta">
+        <span class="reco-row__symbol">${ipo.symbol} <span class="badge ${signalBadgeClass(ipo.recommendation === 'AVOID' ? 'SELL' : ipo.recommendation)}">${ipo.recommendation}</span></span>
+        <span class="text-muted">${ipo.companyName || ''} · ${ipo.status || ''}</span>
+      </div>
+      <div class="reco-row__numbers">
+        <div>${ipo.predictedListingGainPercent != null ? ipo.predictedListingGainPercent.toFixed(1) + '% predicted gain' : '—'}</div>
+        <div class="text-muted">confidence ${ipo.listingGainConfidence != null ? Math.round(ipo.listingGainConfidence) : '—'}%</div>
+      </div>
+    </div>`;
+  el.addEventListener('click', () => onOpen(ipo));
+  return el;
+}
+
+function tierSection(label, items, cardFn, onOpen) {
+  const section = document.createElement('div');
+  section.className = 'cap-tier';
+  const header = document.createElement('h3');
+  header.className = 'cap-tier__header';
+  header.textContent = `${label} (${items.length})`;
+  section.appendChild(header);
+  const grid = document.createElement('div');
+  grid.className = 'reco-card-grid';
+  items.forEach(item => grid.appendChild(cardFn(item, onOpen)));
+  section.appendChild(grid);
+  return section;
+}
+
+async function renderBoard(el, market) {
+  el.innerHTML = '<p class="text-muted">Loading…</p>';
+  try {
+    const body = await apiJson(`/api/v1/recommendations/board?market=${market}`);
+    if (!body.success || !body.data || Object.keys(body.data).length === 0) {
+      el.innerHTML = `<p class="text-muted">${body.message || 'No actionable recommendations right now.'}</p>`;
+      return;
+    }
+    el.innerHTML = '';
+    for (const [tier, items] of Object.entries(body.data)) {
+      el.appendChild(tierSection(TIER_LABEL[tier] || tier, items, stockCard, showStockDetail));
+    }
+  } catch (err) {
+    el.innerHTML = `<p class="error-text">${err.message}</p>`;
+  }
+}
+
+async function renderIpoBoard(el) {
+  el.innerHTML = '<p class="text-muted">Loading…</p>';
+  try {
+    const body = await apiJson('/api/v1/ipo/recommendations');
+    if (!body.success || !body.data || body.data.length === 0) {
+      el.innerHTML = `<p class="text-muted">${body.message || 'No IPO data available right now.'}</p>`;
+      return;
+    }
+    el.innerHTML = '';
+    for (const group of IPO_GROUP_ORDER) {
+      const items = body.data
+        .filter(i => i.recommendation === group)
+        .sort((a, b) => (b.listingGainConfidence ?? 0) - (a.listingGainConfidence ?? 0));
+      if (items.length) el.appendChild(tierSection(IPO_GROUP_LABEL[group], items, ipoCard, showIpoDetail));
+    }
+  } catch (err) {
+    el.innerHTML = `<p class="error-text">${err.message}</p>`;
+  }
 }
 
 function quoteCard(q) {
@@ -44,32 +126,46 @@ function quoteCard(q) {
 
 export async function renderDashboard(mount) {
   mount.innerHTML = `
-    <div class="view-grid">
-      <div class="card">
-        <h3 style="margin-top:0">Quick quote</h3>
-        <form id="quote-form" class="form-row">
-          <div class="field" style="flex:1;min-width:120px;">
-            <label for="quote-symbol">Symbol</label>
-            <input id="quote-symbol" type="text" placeholder="AAPL" required>
-          </div>
-          <div class="field">
-            <label for="quote-market">Market</label>
-            <select id="quote-market">
-              ${MARKETS.map(m => `<option value="${m}">${m}</option>`).join('')}
-            </select>
-          </div>
-          <button type="submit" class="btn">Get quote</button>
-        </form>
-        <p class="error-text" id="quote-error" hidden></p>
-        <div id="quote-mount"></div>
-      </div>
+    <div class="tabs" id="market-tabs">
+      <button type="button" class="tab is-active" data-tab="us">US Markets</button>
+      <button type="button" class="tab" data-tab="india">Indian Markets</button>
+      <button type="button" class="tab" data-tab="ipo">IPOs</button>
+    </div>
+    <div id="board-mount"><p class="text-muted">Loading…</p></div>
 
-      <div class="card" style="grid-column:1/-1;">
-        <h3 style="margin-top:0">Today's top recommendations</h3>
-        <p class="text-muted" id="reco-summary">Loading…</p>
-        <div id="reco-mount"></div>
-      </div>
-    </div>`;
+    <details class="card" style="margin-top:20px;">
+      <summary style="cursor:pointer;font-weight:600;">Quick quote lookup</summary>
+      <form id="quote-form" class="form-row" style="margin-top:12px;">
+        <div class="field" style="flex:1;min-width:120px;">
+          <label for="quote-symbol">Symbol</label>
+          <input id="quote-symbol" type="text" placeholder="AAPL" required>
+        </div>
+        <div class="field">
+          <label for="quote-market">Market</label>
+          <select id="quote-market">
+            ${MARKETS.map(m => `<option value="${m}">${m}</option>`).join('')}
+          </select>
+        </div>
+        <button type="submit" class="btn">Get quote</button>
+      </form>
+      <p class="error-text" id="quote-error" hidden></p>
+      <div id="quote-mount"></div>
+    </details>`;
+
+  const boardMount = mount.querySelector('#board-mount');
+  const tabsEl = mount.querySelector('#market-tabs');
+
+  async function showTab(tab) {
+    tabsEl.querySelectorAll('.tab').forEach(t => t.classList.toggle('is-active', t.dataset.tab === tab));
+    if (tab === 'us') await renderBoard(boardMount, 'US_NASDAQ');
+    else if (tab === 'india') await renderBoard(boardMount, 'INDIA_NSE');
+    else await renderIpoBoard(boardMount);
+  }
+
+  tabsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab');
+    if (btn) showTab(btn.dataset.tab);
+  });
 
   mount.querySelector('#quote-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -94,19 +190,5 @@ export async function renderDashboard(mount) {
     }
   });
 
-  const summaryEl = mount.querySelector('#reco-summary');
-  const recoMount = mount.querySelector('#reco-mount');
-  try {
-    const body = await apiJson('/api/v1/recommendations/daily?topN=10');
-    if (body.success && body.data) {
-      summaryEl.textContent = body.data.marketSummary || `${body.data.totalRecommendations} recommendations`;
-      recoMount.innerHTML = (body.data.topBuys || []).map(recoRow).join('') || '<p class="text-muted">No active recommendations right now.</p>';
-    } else {
-      summaryEl.textContent = body.message || 'No data available';
-    }
-  } catch (err) {
-    summaryEl.textContent = '';
-    summaryEl.classList.add('error-text');
-    summaryEl.textContent = err.message;
-  }
+  await showTab('us');
 }
