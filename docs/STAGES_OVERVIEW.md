@@ -564,6 +564,38 @@ docs/HFT_ARCHITECTURE.md                                               (§29 new
 
 ---
 
+### Stage 13 — UI Completion & Virtual Portfolio
+
+Five UI gaps closed as one user journey (see → understand → buy elsewhere → track → get
+alerted). Full detail: `docs/STAGE13_UI_COMPLETION.md`, design decisions: `HFT_ARCHITECTURE.md`
+§30.
+
+| Before | After |
+|---|---|
+| Flat top-10 US recommendation list | 3 tabs (US/India/IPO), cap-tier/category grouped, sorted by confidence |
+| No way to see full analysis | Click any card → detail modal (scores, reasons, risks, stop-loss context) |
+| No buy/sell path at all | Zerodha Kite / INDmoney hand-off links — never executes trades itself |
+| `PortfolioPosition` existed, unwired, no owner | Real per-user CRUD, `username` field added |
+| No notifications | Scheduled monitor — target/stop-loss/signal-deterioration alerts, suggest-only |
+
+**Modified/new files:**
+```
+src/main/java/com/hft/model/enums/MarketCapTier.java              (new)
+src/main/java/com/hft/model/domain/PortfolioAlert.java             (new)
+src/main/java/com/hft/service/portfolio/PortfolioService.java      (new)
+src/main/java/com/hft/service/portfolio/PortfolioMonitorService.java (new)
+src/main/java/com/hft/controller/PortfolioController.java          (new)
+src/main/java/com/hft/service/signal/RecommendationEngine.java     (+generateBoard())
+src/main/resources/static/js/modal.js, broker-links.js             (new)
+src/main/resources/static/js/views/detail.js, portfolio.js         (new)
+src/main/resources/static/js/views/dashboard.js                    (rewritten)
+src/main/resources/static/css/layout.css                            (tabs, modal, cards, alerts)
+docs/STAGE13_UI_COMPLETION.md                                        (new — this stage's detail doc)
+docs/HFT_ARCHITECTURE.md                                              (§30 new)
+```
+
+---
+
 ## 4. DEPENDENCY EVOLUTION (build.gradle.kts)
 
 ```
@@ -625,6 +657,10 @@ Stage 11 adds:
 
 Stage 12 adds:
   (no new dependencies — AlphaVantageBudgetGuard is pure Java, java.time.Clock only)
+
+Stage 13 adds:
+  (no new backend dependencies — pure Spring/JPA. Frontend: no new dependencies either,
+   still zero-build-step vanilla HTML/CSS/JS, per the Stage 8 design goal)
 ```
 
 ---
@@ -676,16 +712,16 @@ Kafka Streams → StreamSinkBridge → gRPC streaming
 
 ## 6. TEST COVERAGE
 
-All 49 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module +
+All 52 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module +
 3 from Stage 10's `MLFeatureVectorTest` + 5 from Stage 11's `OnnxModelServiceTest` + 4 from
-Stage 12's `AlphaVantageBudgetGuardTest`):
+Stage 12's `AlphaVantageBudgetGuardTest` + 3 from Stage 13's `MarketCapTierTest`):
 
 ```
 gradle test
 
 ┌─────────────────────────────────────────────────────────┐
 │  Test Results                                           │
-│  Tests run: 49                                          │
+│  Tests run: 52                                          │
 │  Failures: 0                                            │
 │  Errors: 0                                              │
 │  Skipped: 0                                             │
@@ -707,6 +743,8 @@ gradle test
 │  ├── AlphaVantageBudgetGuard exhaustion/reset/never-     │
 │  │     throws (Stage 12, deterministic via injectable    │
 │  │     Clock — no real day-boundary waiting needed)      │
+│  ├── MarketCapTier boundary values (Stage 13 — landing   │
+│  │     in the adjacent tier would misfile every card)    │
 │  └── Domain model constructors and enums               │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -736,6 +774,8 @@ planned, not built.
 | Stage 10 | `ec078d1` | ASRB wired into the live recommendation pipeline |
 | Stage 11 | `813e9fe` | ONNX model serving infrastructure — no model bundled |
 | Stage 12 | `853c799` | Alpha Vantage call budget — two root causes, not one |
+| Stage 13a | `a3585a6` | Dashboard cap-tier board + virtual portfolio backend |
+| Stage 13b | `2529c3e` | Dashboard tabs, detail modal, broker hand-off, portfolio UI |
 
 Short hashes only — commit trailers no longer include AI-attribution as of Stage 9c.
 
@@ -816,7 +856,8 @@ gRPC (Stage 2):
 | `docs/STAGE10_ASRB_WIRING.md` | ASRB wired live — config reference, reward loop, verification, the fixed `@Async`/`Optional` bug |
 | `docs/STAGE11_ONNX_SERVING.md` | ONNX serving infra — model contract, why no model is bundled, config reference, verification |
 | `docs/STAGE12_ALPHA_VANTAGE_BUDGET.md` | The two root causes (cache-evict bug + no shared budget), the fix, verification |
-| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 29 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra, §27 ASRB wiring, §28 ONNX serving, §29 AV budget |
+| `docs/STAGE13_UI_COMPLETION.md` | Dashboard tabs/cap-tier board, detail view, broker hand-off, virtual portfolio + alerts |
+| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 30 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra, §27 ASRB wiring, §28 ONNX serving, §29 AV budget, §30 UI completion |
 | `docs/ASRB_TECHNICAL_DISCLOSURE.md` | Adaptive Source Reliability Bandit — algorithm spec, prior art, novelty draft, eval methodology |
 | `docs/STAGES_OVERVIEW.md` | This file — evolution summary, performance comparison |
 
@@ -907,6 +948,24 @@ STAGE 12 (COMPLETE): Alpha Vantage Call Budget
   └── Live-verified: exactly 20 real GLOBAL_QUOTE calls fired (matching the configured
         budget), then the guard transparently blocked the remaining 4 with zero further
         HTTP round-trips — confirmed via log count, not assumed
+
+STAGE 13 (COMPLETE): UI Completion & Virtual Portfolio
+  ├── Dashboard: 3 tabs (US/India/IPO), grouped by market-cap tier (MEGA..MICRO, IPOs by
+  │     recommendation category instead — no meaningful cap pre-listing), sorted by
+  │     confidence within each group — new RecommendationEngine.generateBoard()
+  ├── Click any card → full detail modal: score breakdown, reasons/risks, ATR-based
+  │     stop-loss with % distance, "model confidence" and risk metrics explicitly labeled
+  │     for what they are (not a backtested win rate or a loss-probability model)
+  ├── Buy/Sell → Zerodha Kite (India) / INDmoney (US) hand-off links — opens the broker's
+  │     own site, never executes a trade or touches credentials itself
+  ├── "I bought this" → real per-user portfolio tracking (PortfolioPosition gained a
+  │     username field — it predates Identity/Auth and had none)
+  ├── PortfolioMonitorService (scheduled) watches open positions, alerts on target hit /
+  │     stop-loss hit / signal turned bearish — suggests SELL/REVIEW, never auto-sells
+  └── Found + fixed live in the browser: a CSS specificity bug where the modal's close
+        button did nothing (`.modal-overlay{display:flex}` was unconditionally beating the
+        browser's own `[hidden]{display:none}` on source order) — confirmed via
+        accessibility-tree element click, not just coordinates, before concluding it was real
 
 ALSO DESIGNED (docs/HFT_ARCHITECTURE.md §24.3), not yet built, no stage number assigned:
   └── Per-user BYOC ConnectedAccount (§24.3, §25 identity foundation exists from Stage 8) —

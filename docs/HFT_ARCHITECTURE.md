@@ -37,6 +37,7 @@
 27. [ASRB Live Wiring](#27-asrb-live-wiring)
 28. [ONNX Model Serving](#28-onnx-model-serving)
 29. [Alpha Vantage Call Budget](#29-alpha-vantage-call-budget)
+30. [UI Completion & Virtual Portfolio](#30-ui-completion--virtual-portfolio)
 
 ---
 
@@ -2640,6 +2641,118 @@ retroactively know about consumption from prior separate runs. 4 new unit tests
 (`AlphaVantageBudgetGuardTest`, using an injectable `Clock` to test day-rollover deterministically)
 cover exhaustion, remaining-count accuracy, day-rollover reset, and that it never throws. Full
 suite: 49/49.
+
+---
+
+## 30. UI COMPLETION & VIRTUAL PORTFOLIO
+
+Stage 8 shipped a deliberately minimal UI — a quick-quote form and a flat list of top US
+recommendations. This stage completes it against five specific gaps: a real default dashboard,
+market-cap-tiered/success-sorted grouping, click-through analysis detail, a brokerage hand-off,
+and purchase tracking with alerts. Full operational detail: `docs/STAGE13_UI_COMPLETION.md`.
+
+### 30.1 Never Executes Trades — Hand-off Only
+
+The single governing constraint on this whole stage: **this platform never touches brokerage
+credentials, never places an order, never transfers money.** "Buy" buttons open Zerodha Kite
+(`kite.zerodha.com`) or INDmoney (`indmoney.com`) in a new tab — the user logs in and trades
+*there*, under their own authentication. `PortfolioPosition` was already modeled (since before
+Identity/Auth existed) as a "virtual portfolio tracker" — this stage confirms and leans into
+that framing explicitly: a position is recorded here only *after* the user tells the app they
+already bought/sold it elsewhere. No symbol-embedding deep link is used for either broker — I
+wasn't confident either publishes a stable, documented "pre-fill this order" URL parameter, and
+a broken guessed deep link is worse than a clean top-level link with a one-line instruction to
+search for the symbol after logging in.
+
+### 30.2 Dashboard: Tabs Are US / India / IPOs, Not Exact Exchanges
+
+The request asked for "tabs for different stock exchanges." The watchlists this platform
+actually tracks (`MarketDataAggregatorService.US_WATCHLIST`/`INDIA_WATCHLIST`) are US-wide and
+India-wide, not partitioned by NYSE vs. NASDAQ vs. AMEX — building exchange-exact tabs would
+mean pretending a distinction the backend doesn't actually make. The three tabs are the
+partitions that are real: US Markets, Indian Markets, IPOs.
+
+### 30.3 Cap-Tier Board
+
+`RecommendationEngine.generateBoard(Market)` scores the full watchlist (not capped to a fixed
+topN — a cap-tier group truncated by an overall limit could go silently empty), groups by the
+new `MarketCapTier` enum (MEGA/LARGE/MID/SMALL/MICRO, largest-first — refactored out of
+`MLFeatureExtractor`'s pre-existing bucketing so there's one source of truth instead of two),
+sorts each group by `confidencePercent` descending. `TradeRecommendation` gained a persisted
+`marketCapTier` field, populated in `buildRecommendation()` from the quote already in scope.
+`GET /api/v1/recommendations/board?market=...` exposes it, pre-grouped
+(`Map<MarketCapTier, List<TradeRecommendation>>`) so the frontend doesn't need to re-derive
+grouping client-side.
+
+IPOs don't have a meaningful market cap pre-listing, so their dashboard tab groups by
+recommendation category instead (APPLY_STRONG → APPLY → RISKY → AVOID, sorted by
+`listingGainConfidence` within each) — the equivalent "best to worst" ordering for IPOs,
+adapted to what's actually available for a security with no trading history yet.
+
+### 30.4 Detail View — What "Success Rate" and "Probable Loss" Actually Mean
+
+The detail modal reuses the `TradeRecommendation`/`IPOData` objects already in memory from the
+board fetch — no second API call. Two fields are deliberately labeled for what they actually
+are, not what the request's words might imply:
+- **"Model confidence"**, not "win rate" — `confidencePercent` is this model's own confidence
+  in the call, not a backtested historical success percentage (no per-symbol historical outcome
+  density exists to compute a real win rate yet). The UI says so directly, next to the number.
+- **"Probable loss chances"** → `riskLevel`, `maxRiskPercent` (loss if stopped out), and
+  `riskRewardRatio` — there's no literal loss-probability model; these are the real risk metrics
+  that exist, presented together rather than inventing a probability number that isn't backed
+  by anything.
+- **"Better stop-loss"** → the existing ATR-based stop-loss (`MLPredictionService
+  .computeStopLoss()`, §16), shown prominently with its % distance from entry and a one-line
+  note on how it's computed. Interpreted as "surface the stop-loss clearly, with context" rather
+  than "design a new, improved stop-loss algorithm" — the latter would be a separate,
+  substantial quant-research task, not a UI-completion request.
+
+### 30.5 Portfolio: Recording, Not Syncing
+
+`OpenPositionRequest`/`ClosePositionRequest` + `PortfolioController` (`/api/v1/portfolio/**`,
+already reserved `.authenticated()` in `SecurityConfig` before this stage — never wired to
+anything until now) let a user record what they bought/sold. Linking a `recommendationId` seeds
+`targetPrice`/`stopLossPrice` from that recommendation automatically; without one (the IPO path,
+and any manual entry), the user can supply them directly or leave them unset.
+
+`PortfolioPosition` predates Identity/Auth and had no owner field — added `username`.
+
+### 30.6 Monitoring & Alerts — Suggests, Never Auto-Sells
+
+`PortfolioMonitorService` (`@Scheduled`, default 15 min, `hft.portfolio.monitor-poll-ms`) scans
+every OPEN position across all users, refreshes `currentPrice`/`unrealizedPnl`, and raises a
+`PortfolioAlert` when: price reaches the target, price breaches the stop-loss, or a fresh
+`generateRecommendation()` call on the symbol now comes back SELL/STRONG_SELL (the model that
+originally justified the purchase has itself turned bearish — no stored baseline confidence
+needed, the reversal is self-contained). Every alert only ever *suggests* SELL or REVIEW; the
+user decides and executes on their own brokerage, exactly like the original purchase. Dedup:
+at most one open (unacknowledged) alert per `(position, alertType)` at a time.
+
+**Cost tradeoff, disclosed rather than hidden:** the signal-deterioration check re-runs the full
+recommendation pipeline (real external API calls, sharing `AlphaVantageBudgetGuard`'s budget
+with everything else) for every open position, every cycle. Fine for a handful of positions;
+would need staggering/batching at scale — not built, since there's nothing to stagger yet.
+
+**Known gap:** a position bought pre-listing (an IPO before its stock actually starts trading)
+has no live quote to monitor against — `MarketDataAggregatorService` has no route to a symbol
+that isn't in `stock_quotes` yet. Monitoring for such a position silently no-ops until the
+stock lists and a real quote exists. Not solved here — would need IPO-lifecycle-aware
+monitoring (checking `IPOData.status` and switching data sources at listing), a separate scoped
+addition.
+
+### 30.7 A Bug Found and Fixed Live: Modal Close Did Nothing
+
+While verifying the detail modal in a real browser, the ✕ close button (and Escape, and
+clicking the overlay) visibly did nothing — a genuine CSS specificity bug, not a testing
+artifact (confirmed by clicking via the accessibility-tree element reference, not just raw
+coordinates). `.modal-overlay { display: flex; ... }` is unconditional; the browser's own
+`[hidden] { display: none }` UA-stylesheet rule has equal specificity (0,1,0 each) to a plain
+class selector, and author styles loading after the UA stylesheet win on source order — so
+`overlayEl.hidden = true` set the attribute correctly but had no visible effect. Fixed with an
+explicit `.modal-overlay[hidden] { display: none; }` (0,2,0 specificity, correctly wins).
+Re-verified live afterward: close button, and the full open→detail→buy-link→"I bought
+this"→Portfolio→alert→dismiss→close-position flow, confirmed working end to end in a real
+Chrome browser, not just compiled.
 
 ---
 
