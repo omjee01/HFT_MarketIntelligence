@@ -34,6 +34,7 @@
 24. [Intelligence Sourcing & Adaptive Fusion (ASRB)](#24-intelligence-sourcing--adaptive-fusion-asrb)
 25. [Identity, Admin & Billing Platform](#25-identity-admin--billing-platform)
 26. [Data & Analytics Infrastructure](#26-data--analytics-infrastructure)
+27. [ASRB Live Wiring](#27-asrb-live-wiring)
 
 ---
 
@@ -2403,6 +2404,122 @@ the first time because there's finally a real key to exhaust. Not fixed here —
 decision (poll less often when Alpha Vantage is the active provider, demote it behind the
 unlimited Yahoo Finance/NSE sources that already cover the same US-market surface, or accept
 a paid tier) rather than a silent workaround.
+
+---
+
+## 27. ASRB LIVE WIRING
+
+Stage 9b built ASRB (§24, `ASRB_TECHNICAL_DISCLOSURE.md`) standalone and deliberately unwired.
+Stage 10 wires it in. Full operational detail: `docs/STAGE10_ASRB_WIRING.md`.
+
+### 27.1 Scope Decision — Sentiment, Not Macro
+
+ASRB replaces `SentimentAnalysisService`'s flat 0.6/0.4 news/social blend specifically — the
+exact multi-source, correlation-prone, narrative-risk-prone category it was designed for (the
+Snapdeal/Aamir-Khan worked example in the disclosure doc is a news/social rumor, not a macro
+statistic). `MacroGeopoliticalService` (FRED, NSE FII/DII) is untouched — those are official
+statistical releases with fundamentally different reliability characteristics than crowd-
+sourced news/social sentiment. A candidate follow-up, not done here.
+
+Five sources feed ASRB: `alpha-vantage-news`, `newsapi`, `sec-edgar`, `reddit`, `stocktwits`.
+Each pass's `claimClusterId` is the symbol itself — a deliberate simplification (no per-
+headline NLP claim-clustering exists in this codebase), meaning every source commenting on the
+same symbol in the same pass corroborates/discounts against every other.
+
+### 27.2 The Context-Vector Chicken-and-Egg
+
+ASRB's `SourceSignal.context` needs the full 41-dim `MLFeatureVector` — but that vector's own
+sentiment slots are normally derived FROM `SentimentData`, which is exactly what ASRB is being
+used to compute. Resolved by building the context with `sentiment=null`
+(`MLFeatureExtractor.extract()` is already null-safe for a null `SentimentData` — verified by
+reading its null-handling before relying on it, not assumed): the 7 sentiment slots fall back
+to neutral defaults for this one context-building call, while the other 34 dims (technical,
+fundamental, macro, price) are real. This context describes the environment sources are being
+evaluated IN, not the sentiment score itself, so this isn't circular — it's exactly what a
+context-conditional reliability model should condition on.
+
+This required reordering `RecommendationEngine`'s pipeline: fundamental and macro now compute
+*before* sentiment (previously: quote → TA → sentiment → fundamental → macro). Neither
+depends on sentiment, so the reorder is behavior-neutral for them.
+
+Callers without a real market context — the IPO engine, scoring a pre-listing symbol with no
+technical history — keep calling the original two-argument `analyzeSentiment(symbol, market)`,
+which still uses the flat blend, completely unchanged. ASRB only activates on the three-
+argument overload, gated additionally by `hft.asrb.enabled` (default `true`; `false` reverts
+every caller to the flat blend with zero other code change — a full kill switch).
+
+### 27.3 Reward Loop
+
+ASRB's posteriors learn from realized outcomes, but outcomes for a given symbol aren't known
+until later — so scoring and reward are two separate calls, not one:
+
+```
+Scoring time:  SentimentAnalysisService persists {context, effectiveWeights} to Redis
+               (key hft:asrb:evidence:<SYMBOL>:<MARKET>, 90-day TTL, best-effort — same
+               fail-open pattern as ModelPerformanceTracker, skips silently if Redis is
+               unreachable rather than failing the request)
+
+Outcome time:  MLResolver.recordSignalOutcome (the existing Stage 5 GraphQL mutation,
+               unchanged elsewhere) computes a binary label — 1.0 if the call's implied
+               direction matched what actually happened, 0.0 otherwise — and calls
+               SentimentAnalysisService.recordOutcome(symbol, market, label), which reads
+               the persisted evidence back and updates each contributing source's posterior
+               directly via SourceReliabilityPosterior.update(context, label, weight) —
+               bypassing aggregate()'s Steps 1-2 (those recompute discounts for FRESH
+               evidence; this backfills the OUTCOME of evidence already scored, using that
+               evidence's own original context/weight — ASRB_TECHNICAL_DISCLOSURE.md §4.2
+               Step 3)
+```
+
+No training loop, no GPU — reuses the existing `recordSignalOutcome` mutation exactly as the
+disclosure doc's design always called for.
+
+### 27.4 Misinformation-Risk Surfacing
+
+`AdaptiveSourceReliabilityBandit.aggregate()`'s `NarrativeRiskAlert`s (dual-use misinfo
+flagging — Improvement B from the original algorithm request) now surface through
+`SentimentData.specialAlert` — a pre-existing field (`"e.g. Insider selling detected"`) that
+was otherwise unused for this purpose. When ASRB flags a narrative as high-risk, that field
+carries a human-readable warning through the *existing* REST/GraphQL response shape — no new
+API surface needed.
+
+### 27.5 A Bug This Surfaced (Unrelated to ASRB, Fixed Anyway)
+
+While live-verifying this wiring, `GET /api/v1/recommendations/stock/{symbol}` — a pre-
+existing endpoint, untouched by Stage 10's own changes — threw
+`IllegalStateException: Invalid return type for async method` on every single call.
+`RecommendationEngine.generateRecommendation()` was annotated `@Async("analysisExecutor")`
+but returns `Optional<TradeRecommendation>`; Spring's async proxy only accepts
+void/Future-family return types, and `RecommendationController` was awaiting the return value
+directly (synchronously), which is fundamentally incompatible with `@Async`. This endpoint had
+never actually been exercised live before this session. Fixed by removing the annotation —
+`generateTopRecommendations`' own parallelism already comes from `.parallelStream()`, and a
+same-class self-invocation (as that method makes) bypasses Spring's AOP proxy entirely anyway
+(a well-known `@Async` limitation), so nothing's concurrency actually changes.
+
+### 27.6 Verified Live
+
+Booted against real MySQL/ClickHouse/Redis/Kafka (`docker` profile). Alpha Vantage's daily
+quota was already exhausted (see §26.6) and NSE returned a bot-detection 403, so a synthetic
+`stock_quotes` row was seeded directly (documented, temporary, deleted after verification) to
+get past the quote-fetch gate and exercise the rest of the pipeline for real. Confirmed via
+log + Redis inspection, not assumed:
+- `[Sentiment] Analyzing: MSFT on US_NASDAQ (ASRB context present)` — the 3-arg overload fired.
+- Real HTTP calls to Alpha Vantage NEWS_SENTIMENT, SEC EDGAR, and StockTwits followed.
+- `hft:asrb:evidence:MSFT:US_NASDAQ` in Redis held the correct shape: a 41-element context
+  array plus a weights map with exactly the 2 sources that actually returned data that pass
+  (`sec-edgar`, `stocktwits` — both at the same starting weight, correct for a first-ever pass
+  with no correlation/misinfo history yet).
+- The composite score reached `MLPredictionService` (53.01/56.01% confidence) and the
+  recommendation was correctly filtered out by the (unrelated, pre-existing) risk/reward
+  gate — not a bug, just synthetic seed data producing an unfavorable ratio.
+- Firing `recordSignalOutcome` produced `[Sentiment] ASRB: 2 source posterior(s) updated from
+  MSFT outcome (label=1.0)` — the reward loop reads back exactly the evidence written at
+  scoring time and updates exactly those sources.
+
+Full suite: 40/40 passing throughout (37 baseline + 3 new `MLFeatureVectorTest` cases
+verifying `toContextArray()`'s field order precisely — a silent ordering bug there would have
+corrupted every source's learned reliability without ever throwing).
 
 ---
 

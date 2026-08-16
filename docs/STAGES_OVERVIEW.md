@@ -485,6 +485,33 @@ docs/HFT_ARCHITECTURE.md                             (§22.2 threshold fix, §26
 
 ---
 
+### Stage 10 — ASRB Live Wiring
+
+ASRB (built standalone in 9b) now actually runs in the live pipeline — full detail:
+`docs/STAGE10_ASRB_WIRING.md`, design rationale: `HFT_ARCHITECTURE.md` §27.
+
+| Before | After |
+|---|---|
+| Sentiment = flat 0.6·news + 0.4·social blend | ASRB fusion when a market context is available (correlation-discounted, misinfo-risk-discounted, reliability-weighted) |
+| No source-reliability learning | Per-source Bayesian posterior, updated via the existing `recordSignalOutcome` mutation |
+| Misinformation risk undetected | Surfaces through the existing `SentimentData.specialAlert` field |
+| `GET /recommendations/stock/{symbol}` crashed on every call | Fixed — unrelated pre-existing `@Async`/`Optional` bug, found while verifying this stage |
+
+**Modified/new files:**
+```
+src/main/java/com/hft/intelligence/AsrbConfig.java              (new)
+src/main/java/com/hft/ml/MLFeatureVector.java                   (+toContextArray())
+src/main/java/com/hft/service/analysis/SentimentAnalysisService.java  (ASRB fusion + reward loop)
+src/main/java/com/hft/service/signal/RecommendationEngine.java  (reordered; builds ASRB context;
+                                                                   removed the broken @Async)
+src/main/java/com/hft/graphql/MLResolver.java                   (reward-loop wiring)
+src/test/java/com/hft/ml/MLFeatureVectorTest.java                (new — 3 tests)
+docs/STAGE10_ASRB_WIRING.md                                       (new — this stage's detail doc)
+docs/HFT_ARCHITECTURE.md                                          (§27 new)
+```
+
+---
+
 ## 4. DEPENDENCY EVOLUTION (build.gradle.kts)
 
 ```
@@ -587,14 +614,15 @@ Kafka Streams → StreamSinkBridge → gRPC streaming
 
 ## 6. TEST COVERAGE
 
-All 37 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module):
+All 40 unit tests pass across all stages (24 baseline + 13 from Stage 9b's ASRB module +
+3 from Stage 10's `MLFeatureVectorTest`):
 
 ```
 gradle test
 
 ┌─────────────────────────────────────────────────────────┐
 │  Test Results                                           │
-│  Tests run: 37                                          │
+│  Tests run: 40                                          │
 │  Failures: 0                                            │
 │  Errors: 0                                              │
 │  Skipped: 0                                             │
@@ -606,6 +634,9 @@ gradle test
 │  ├── REST controllers                                   │
 │  ├── ASRB (correlation, posterior, stability, policy —  │
 │  │     7 classes, Stage 9b)                              │
+│  ├── MLFeatureVector.toContextArray() field ordering    │
+│  │     (Stage 10 — a silent ordering bug here would      │
+│  │     corrupt every ASRB source's learned reliability)  │
 │  └── Domain model constructors and enums               │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -632,6 +663,7 @@ planned, not built.
 | Stage 9a | `492ebd6` | IPO Buy/Sell Decision Engine — Phase 1 pre-listing scoring |
 | Stage 9b | `44a6ba6` | Adaptive Source Reliability Bandit (ASRB) — standalone module |
 | Stage 9c | `c8b435f` | Real infrastructure — MySQL, ClickHouse, Redis, Kafka |
+| Stage 10 | `ec078d1` | ASRB wired into the live recommendation pipeline |
 
 Short hashes only — commit trailers no longer include AI-attribution as of Stage 9c.
 
@@ -709,7 +741,8 @@ gRPC (Stage 2):
 | `docs/STAGE6_BACKTESTING.md` | Backtesting engine — BacktestRunner algo, metrics reference, walk-forward, GraphQL guide |
 | `docs/STAGE7_DATA_SOURCING.md` | Real data sourcing — source-by-source real/blocked/deferred verdict, config, verification |
 | `docs/STAGE9_INFRASTRUCTURE.md` | Real MySQL/ClickHouse/Redis/Kafka — setup, two-datasource design, the MySQL reserved-word bug, verification |
-| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 26 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra |
+| `docs/STAGE10_ASRB_WIRING.md` | ASRB wired live — config reference, reward loop, verification, the fixed `@Async`/`Optional` bug |
+| `docs/HFT_ARCHITECTURE.md` | Full platform architecture, 27 sections incl. §22 IPO engine, §23 Web UI, §24 ASRB, §25 Identity/Admin, §26 Data infra, §27 ASRB wiring |
 | `docs/ASRB_TECHNICAL_DISCLOSURE.md` | Adaptive Source Reliability Bandit — algorithm spec, prior art, novelty draft, eval methodology |
 | `docs/STAGES_OVERVIEW.md` | This file — evolution summary, performance comparison |
 
@@ -767,14 +800,30 @@ STAGE 9 (COMPLETE): IPO Engine, ASRB & Real Infrastructure
         STAGE9_INFRASTRUCTURE.md), replacing H2-in-memory/no-broker/simple-cache; real
         Alpha Vantage key wired in (25 req/day free tier — stricter than assumed)
 
-STAGE 10 (Planned, was "Stage 7", then "Stage 8", then "Stage 9"): Deep Learning & ONNX Serving
+STAGE 10 (COMPLETE): ASRB Live Wiring
+  ├── ASRB (9b) now fuses SentimentAnalysisService's 5 news/social sources — replaces the flat
+  │     0.6/0.4 blend for callers with a real market context (RecommendationEngine); the IPO
+  │     engine's context-free calls are unchanged. Macro sources (FRED/NSE-FII-DII/GDELT) are
+  │     NOT wired into ASRB — a deliberate scope decision, see §27.1.
+  ├── Reward loop: recordSignalOutcome (Stage 5's existing GraphQL mutation) now also updates
+  │     ASRB's per-source posteriors via a Redis-persisted evidence handoff
+  ├── Misinformation-risk alerts surface through the existing SentimentData.specialAlert field
+  └── Found + fixed a pre-existing, unrelated bug while live-verifying: GET
+        /api/v1/recommendations/stock/{symbol} threw on every call (@Async method returning
+        Optional — invalid combination, never actually exercised live before this stage)
+
+STAGE 11 (Planned, was "Stage 7", then "8", "9", "10"): Deep Learning & ONNX Serving
   ├── ONNX model serving via DJL (Deep Java Library)
   ├── Real-time feature vector construction in Kafka Streams
   ├── 45-feature vector → model inference → confidence score update
   └── Outcome reconciliation using backtest-results topic (Stage 6)
 
+STAGE 12 (Planned): Alpha Vantage Polling-Frequency Fix
+  └── 25 req/day free tier vs. the existing 5-second/24-symbol dev poll cadence (§26.6) —
+        needed before Alpha Vantage-sourced data (including ASRB's alpha-vantage-news source)
+        can be relied on consistently rather than exhausted within the first minute of boot
+
 ALSO DESIGNED (docs/HFT_ARCHITECTURE.md §24.3), not yet built, no stage number assigned:
-  ├── Wiring ASRB (9b) into the live recommendation pipeline — needs a calibration-data decision
   └── Per-user BYOC ConnectedAccount (§24.3, §25 identity foundation exists from Stage 8) —
         a user linking their own read-only Twitter/Reddit account, pooled into the shared signal
 ```
