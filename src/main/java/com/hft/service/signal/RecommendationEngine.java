@@ -2,6 +2,7 @@ package com.hft.service.signal;
 
 import com.hft.model.domain.*;
 import com.hft.model.enums.*;
+import com.hft.ml.MLFeatureExtractor;
 import com.hft.ml.ModelABRouter;
 import com.hft.service.analysis.*;
 import com.hft.service.data.MarketDataAggregatorService;
@@ -11,7 +12,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -48,6 +48,7 @@ public class RecommendationEngine {
     private final MacroGeopoliticalService    macroService;
     private final MLPredictionService         mlService;
     private final RiskManagementService       riskService;
+    private final MLFeatureExtractor          featureExtractor;
 
     /** Null when Stage 5 is not on classpath or disabled. Falls back to mlService.predict(). */
     @Autowired(required = false)
@@ -65,8 +66,15 @@ public class RecommendationEngine {
     /**
      * Generate a full recommendation for a single symbol.
      * Returns empty if signal is HOLD or filters eliminate it.
+     *
+     * NOT @Async: it returns Optional<TradeRecommendation>, and Spring's async proxy only
+     * accepts void/Future-family return types — calling this from outside the class (e.g.
+     * RecommendationController, which awaits the return value directly) threw
+     * "Invalid return type for async method" on every call. generateTopRecommendations'
+     * own parallelism comes from .parallelStream() below, not from this annotation — a
+     * same-class call also bypasses Spring's AOP proxy entirely (well-known @Async
+     * self-invocation limitation), so removing it doesn't reduce that path's concurrency.
      */
-    @Async("analysisExecutor")
     public Optional<TradeRecommendation> generateRecommendation(String symbol, Market market) {
         log.debug("[Engine] Processing: {} on {}", symbol, market);
 
@@ -84,15 +92,21 @@ public class RecommendationEngine {
             Optional<TechnicalIndicators> taOpt = taService.analyze(symbol, market);
             TechnicalIndicators ta = taOpt.orElse(null);
 
-            // ─── Step 3: Sentiment ────────────────────────────────────────────
-            SentimentData sentiment = sentimentService.analyzeSentiment(symbol, market);
-
-            // ─── Step 4: Fundamental ──────────────────────────────────────────
+            // ─── Step 3: Fundamental ──────────────────────────────────────────
             Optional<FundamentalData> fdOpt = fundamentalService.analyze(symbol, market);
             FundamentalData fd = fdOpt.orElse(null);
 
-            // ─── Step 5: Macro ────────────────────────────────────────────────
+            // ─── Step 4: Macro ────────────────────────────────────────────────
             MacroData macro = macroService.getMacroData(market);
+
+            // ─── Step 5: Sentiment (ASRB-fused — Stage 10) ────────────────────
+            // Fundamental/macro moved ahead of sentiment (was steps 4-5, pre-Stage-10) so a
+            // real market context exists here. sentiment=null when building it — this context
+            // describes the environment sources are being evaluated IN, not the sentiment
+            // score itself (MLFeatureExtractor is null-safe for a null SentimentData).
+            double[] asrbContext = featureExtractor.extract(symbol, market, quote, ta, fd, null, macro)
+                    .toContextArray();
+            SentimentData sentiment = sentimentService.analyzeSentiment(symbol, market, asrbContext);
 
             // ─── Step 6: ML Prediction (A/B router when Stage 5 active) ─────
             List<OHLCVData> recentBars = marketData.getRecentHistory(symbol, market, 60);

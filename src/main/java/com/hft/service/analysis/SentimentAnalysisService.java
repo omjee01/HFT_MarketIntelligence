@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hft.admin.PlatformCredentialProvider;
 import com.hft.admin.PlatformSettingsService;
 import com.hft.config.CacheConfig;
+import com.hft.intelligence.AdaptiveSourceReliabilityBandit;
+import com.hft.intelligence.SourceReliabilityPosterior;
+import com.hft.intelligence.SourceSignal;
 import com.hft.model.domain.SentimentData;
 import com.hft.model.enums.Market;
 import com.hft.model.enums.SentimentLabel;
@@ -19,10 +22,13 @@ import okhttp3.Request;
 import okhttp3.Response;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -41,6 +47,13 @@ import java.util.*;
  *
  * Twitter/X is deliberately not implemented — no free API tier (budget decision, see
  * HFT_ARCHITECTURE.md §24.2).
+ *
+ * Stage 10: when a 41-dim market context is supplied (analyzeSentiment(symbol, market, context)
+ * — used by RecommendationEngine, which has TA/FD/macro already computed), the news+social
+ * sources above are fused via ASRB (com.hft.intelligence, HFT_ARCHITECTURE.md §24) instead of
+ * the flat 0.6/0.4 blend — correlation-discounted, misinformation-risk-discounted, reliability-
+ * weighted. The plain two-arg overload (used by the IPO engine, which has no meaningful
+ * technical context for a pre-listing symbol) is unchanged: same flat blend as before Stage 10.
  */
 @Slf4j
 @Service
@@ -48,11 +61,17 @@ import java.util.*;
 public class SentimentAnalysisService {
 
     private static final String REDDIT_USER_AGENT = "HFT-Market-Intelligence-Platform/1.0 (by /u/hmip_research)";
+    private static final String ASRB_EVIDENCE_REDIS_PREFIX = "hft:asrb:evidence:";
 
     private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final SentimentUtil sentimentUtil;
     private final PlatformSettingsService platformSettingsService;
+    private final AdaptiveSourceReliabilityBandit asrbBandit;
+    private final StringRedisTemplate redisTemplate;
+
+    @Value("${hft.asrb.enabled:true}")
+    private boolean asrbEnabled;
 
     private volatile String redditAccessToken;
     private volatile long redditTokenExpiryEpochMs = 0L;
@@ -111,29 +130,46 @@ public class SentimentAnalysisService {
     }
 
     /**
-     * Compute sentiment score for a symbol from news + social sources.
-     * Cached for 15 minutes.
+     * Compute sentiment score for a symbol from news + social sources, flat-blended.
+     * Cached for 15 minutes. Used where no market/technical context is available (e.g. the
+     * IPO engine, scoring a pre-listing symbol with no price history) — see class javadoc.
      */
     @Cacheable(value = CacheConfig.CACHE_SENTIMENT, key = "#symbol + '_' + #market.name()")
     public SentimentData analyzeSentiment(String symbol, Market market) {
-        log.debug("[Sentiment] Analyzing: {} on {}", symbol, market);
+        return analyzeSentimentInternal(symbol, market, null);
+    }
+
+    /**
+     * Same as {@link #analyzeSentiment(String, Market)}, but fuses sources via ASRB using the
+     * supplied 41-dim market context (com.hft.ml.MLFeatureVector field order) instead of the
+     * flat blend — see class javadoc. Cached separately (distinct key) so the two variants
+     * never collide within the 15-minute cache window.
+     */
+    @Cacheable(value = CacheConfig.CACHE_SENTIMENT, key = "#symbol + '_' + #market.name() + '_asrb'")
+    public SentimentData analyzeSentiment(String symbol, Market market, double[] context) {
+        return analyzeSentimentInternal(symbol, market, context);
+    }
+
+    private SentimentData analyzeSentimentInternal(String symbol, Market market, double[] context) {
+        log.debug("[Sentiment] Analyzing: {} on {} (ASRB context {})", symbol, market,
+                context != null ? "present" : "absent");
+
+        // ── Gather each source's own raw text/scores, kept separate per source ─────────────
+        List<String> avHeadlines = fetchAlphaVantageNews(symbol);
+        List<String> newsApiHeadlines = (newsApiEnabled && !resolveNewsApiKey().isBlank())
+                ? fetchNewsApi(symbol, market) : Collections.emptyList();
+        List<String> secEdgarItems = fetchSecEdgarFilings(symbol, market);
+        List<String> redditPosts = fetchRedditPosts(symbol, market);
+        List<Double> stockTwitsScores = fetchStockTwitsScores(symbol);
 
         List<String> headlines = new ArrayList<>();
-        int positiveCount = 0, negativeCount = 0, neutralCount = 0;
-
-        // ── Alpha Vantage News ────────────────────────────────────────────────
-        List<String> avHeadlines = fetchAlphaVantageNews(symbol);
         headlines.addAll(avHeadlines);
+        headlines.addAll(newsApiHeadlines);
+        headlines.addAll(secEdgarItems);
 
-        // ── NewsAPI ───────────────────────────────────────────────────────────
-        if (newsApiEnabled && !resolveNewsApiKey().isBlank()) {
-            headlines.addAll(fetchNewsApi(symbol, market));
-        }
-
-        // ── SEC EDGAR filings (US only) — company-history / regulatory signal ──
-        headlines.addAll(fetchSecEdgarFilings(symbol, market));
-
-        // Score each headline
+        // Score each headline — still needed for counts/labels/keyHeadlines regardless of
+        // whether the composite score below comes from ASRB or the flat blend.
+        int positiveCount = 0, negativeCount = 0, neutralCount = 0;
         double newsSentimentTotal = 0;
         for (String headline : headlines) {
             double s = sentimentUtil.score(headline);
@@ -142,13 +178,7 @@ public class SentimentAnalysisService {
             else if (s < -0.1) negativeCount++;
             else               neutralCount++;
         }
-
-        double newsSentiment = headlines.isEmpty() ? 0 :
-                               newsSentimentTotal / headlines.size();
-
-        // ── Social sentiment: Reddit + StockTwits (real data — replaces Phase-1 Math.random()) ──
-        List<String> redditPosts = fetchRedditPosts(symbol, market);
-        List<Double> stockTwitsScores = fetchStockTwitsScores(symbol);
+        double newsSentiment = headlines.isEmpty() ? 0 : newsSentimentTotal / headlines.size();
 
         List<Double> socialScores = new ArrayList<>();
         for (String post : redditPosts) socialScores.add(sentimentUtil.score(post));
@@ -166,9 +196,28 @@ public class SentimentAnalysisService {
             socialSentiment = newsSentiment * 0.8;
         }
 
-        // Weighted aggregate
-        double overall = (newsSentiment * 0.6) + (socialSentiment * 0.4);
+        // ── Composite: ASRB fusion when context is available, else the original flat blend ──
+        double overall;
+        List<AdaptiveSourceReliabilityBandit.NarrativeRiskAlert> riskAlerts = List.of();
+        if (context != null && asrbEnabled) {
+            List<SourceSignal> signals = buildSourceSignals(symbol, avHeadlines, newsApiHeadlines,
+                    secEdgarItems, redditPosts, stockTwitsScores, context);
+            if (!signals.isEmpty()) {
+                AdaptiveSourceReliabilityBandit.CompositeScore fused = asrbBandit.aggregate(signals, Map.of());
+                overall = (fused.score() / 50.0) - 1.0;   // ASRB's 0-100 -> this class's -1..+1
+                riskAlerts = fused.riskAlerts();
+                persistEvidenceForReward(symbol, market, fused, context);
+            } else {
+                overall = (newsSentiment * 0.6) + (socialSentiment * 0.4);
+            }
+        } else {
+            overall = (newsSentiment * 0.6) + (socialSentiment * 0.4);
+        }
         overall = Math.max(-1.0, Math.min(1.0, overall));
+
+        String specialAlert = riskAlerts.isEmpty() ? null : String.format(
+                "Elevated misinformation-risk narrative detected (risk=%.2f, velocity z=%.1f) — "
+                + "corroborate independently before acting", riskAlerts.get(0).misinfoRisk(), riskAlerts.get(0).velocityZ());
 
         return SentimentData.builder()
                 .symbol(symbol)
@@ -190,9 +239,99 @@ public class SentimentAnalysisService {
                 .hasFedMention(containsFedMention(headlines))
                 .hasRbiMention(containsRbiMention(headlines))
                 .hasPoliticalRisk(containsPoliticalRisk(headlines))
+                .specialAlert(specialAlert)
                 .computedAt(LocalDateTime.now())
                 .windowPeriod("24H")
                 .build();
+    }
+
+    // ─── ASRB fusion (Stage 10) ─────────────────────────────────────────────────
+
+    /** One SourceSignal per source that actually returned evidence this pass; symbol is the
+     *  claim-cluster key (all sources commenting on the same symbol this pass corroborate/
+     *  contradict each other) — a deliberate simplification, no per-headline NLP claim
+     *  clustering exists in this codebase. */
+    private List<SourceSignal> buildSourceSignals(String symbol, List<String> avHeadlines,
+            List<String> newsApiHeadlines, List<String> secEdgarItems, List<String> redditPosts,
+            List<Double> stockTwitsScores, double[] context) {
+        Instant now = Instant.now();
+        List<SourceSignal> signals = new ArrayList<>();
+        addSourceIfPresent(signals, "alpha-vantage-news", avHeadlines, symbol, now, context);
+        addSourceIfPresent(signals, "newsapi", newsApiHeadlines, symbol, now, context);
+        addSourceIfPresent(signals, "sec-edgar", secEdgarItems, symbol, now, context);
+        addSourceIfPresent(signals, "reddit", redditPosts, symbol, now, context);
+        if (!stockTwitsScores.isEmpty()) {
+            double avg = stockTwitsScores.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+            signals.add(new SourceSignal("stocktwits", to0to100(avg), symbol, now, context));
+        }
+        return signals;
+    }
+
+    private void addSourceIfPresent(List<SourceSignal> signals, String sourceId, List<String> texts,
+            String claimClusterId, Instant now, double[] context) {
+        if (texts.isEmpty()) return;
+        double score = sentimentUtil.aggregateScore(texts);   // recency-weighted, -1..+1
+        signals.add(new SourceSignal(sourceId, to0to100(score), claimClusterId, now, context));
+    }
+
+    private double to0to100(double neg1to1) {
+        return Math.max(0, Math.min(100, (neg1to1 + 1.0) * 50.0));
+    }
+
+    /** Best-effort — an analytics/learning aid, not the system of record. Mirrors
+     *  ModelPerformanceTracker's exact fail-open pattern: skip silently if Redis is
+     *  unreachable (e.g. plain "dev" profile, no broker/cache infra running). */
+    private void persistEvidenceForReward(String symbol, Market market,
+            AdaptiveSourceReliabilityBandit.CompositeScore fused, double[] context) {
+        try {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("context", context);
+            payload.put("weights", fused.effectiveWeightsUsed());
+            String json = objectMapper.writeValueAsString(payload);
+            redisTemplate.opsForValue().set(evidenceKey(symbol, market), json, Duration.ofDays(90));
+        } catch (Exception e) {
+            log.debug("[Sentiment] ASRB evidence persist skipped for {}: {}", symbol, e.getMessage());
+        }
+    }
+
+    /**
+     * Reward loop: called from MLResolver.recordSignalOutcome (the existing GraphQL mutation,
+     * unchanged elsewhere) once a symbol's actual outcome is known. Looks up the evidence this
+     * class persisted at scoring time and updates each contributing source's reliability
+     * posterior directly — bypasses ASRB's aggregate() Steps 1-2 (those recompute discounts for
+     * FRESH evidence; this is backfilling the OUTCOME of evidence already scored, using that
+     * evidence's own original context/weight, matching ASRB_TECHNICAL_DISCLOSURE.md §4.2 Step 3).
+     *
+     * @param outcomeLabel 1.0 if the sources' implied direction was validated by what actually
+     *                     happened, 0.0 otherwise — binary, matching PolicySelector's
+     *                     Beta-Bernoulli framing (ASRB_TECHNICAL_DISCLOSURE.md §4.2 Step 5).
+     */
+    public void recordOutcome(String symbol, Market market, double outcomeLabel) {
+        if (!asrbEnabled) return;
+        try {
+            String json = redisTemplate.opsForValue().get(evidenceKey(symbol, market));
+            if (json == null) return;
+            JsonNode root = objectMapper.readTree(json);
+            double[] context = objectMapper.convertValue(root.get("context"), double[].class);
+            JsonNode weights = root.get("weights");
+            Iterator<Map.Entry<String, JsonNode>> fields = weights.fields();
+            int updated = 0;
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> e = fields.next();
+                SourceReliabilityPosterior posterior = asrbBandit.posteriorFor(e.getKey());
+                if (posterior == null) continue;
+                posterior.update(context, outcomeLabel, e.getValue().asDouble());
+                updated++;
+            }
+            log.info("[Sentiment] ASRB: {} source posterior(s) updated from {} outcome (label={})",
+                    updated, symbol, outcomeLabel);
+        } catch (Exception e) {
+            log.debug("[Sentiment] ASRB outcome update skipped for {}: {}", symbol, e.getMessage());
+        }
+    }
+
+    private String evidenceKey(String symbol, Market market) {
+        return ASRB_EVIDENCE_REDIS_PREFIX + symbol + ":" + market.name();
     }
 
     // ─── Alpha Vantage News API ────────────────────────────────────────────────

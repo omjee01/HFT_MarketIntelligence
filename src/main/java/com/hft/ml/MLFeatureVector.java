@@ -72,4 +72,20 @@ public class MLFeatureVector {
     double dayChangePct;      // day change % (BigDecimal.doubleValue)
     double volumeSpike;       // volumeRatio – 1; positive = above-average volume
     double marketCapClass;    // 0=micro <$300M, 1=small, 2=mid, 3=large, 4=mega ≥$200B
+
+    /**
+     * Flattens the 41 double fields above, in declaration order — the exact shape
+     * com.hft.intelligence.SourceSignal's context expects (SourceSignal.CONTEXT_DIM = 41,
+     * see that class's javadoc). Keep this in lockstep with the field list above.
+     */
+    public double[] toContextArray() {
+        return new double[] {
+            rsi14, macdLine, macdHistogram, bbPosition, bbWidth, sma20Distance, sma50Distance,
+            sma200Distance, ema9Distance, atrNormalized, volumeRatio, obvTrend, technicalScore, smaAlignment,
+            peRatioNorm, pbRatio, roe, debtToEquity, revenueGrowthYoY, epsGrowthYoY, dividendYield, fundamentalScore,
+            sentimentRaw, bullishPercent, bearishPercent, newsCountLog, mentionsLog, sentimentMomentum, normalizedSentiment,
+            gdpGrowthRate, inflationRate, centralBankRate, vixLevel, fiiFlowNorm, macroScore, marketRegime,
+            percentFrom52High, percentFrom52Low, dayChangePct, volumeSpike, marketCapClass
+        };
+    }
 }

@@ -164,6 +164,29 @@ hft:
     base-url: https://www.screener.in/api
     enabled: true
 
+  # Stage 10 — Adaptive Source Reliability Bandit (ASRB), wired live into
+  # SentimentAnalysisService. docs/ASRB_TECHNICAL_DISCLOSURE.md §10 explicitly leaves these
+  # uncalibrated pending real backtest data — these are structural starting defaults, not
+  # claimed-final constants. Kill switch: enabled:false reverts to the pre-Stage-10 flat
+  # 0.6/0.4 news/social blend everywhere, with zero other behavior change.
+  asrb:
+    enabled: true
+    lambda-corr: 0.97        # correlation EWMA decay — closer to 1 = longer memory
+    kappa: 0.5                # correlation-discount sensitivity, (0,1]
+    lambda-time: 0.99         # posterior temporal forgetting — slower than lambda-corr;
+                               # reliability is a more stable property than moment-to-moment correlation
+    prior-precision: 1.0       # weak/diffuse Bayesian prior on the reliability posterior
+    rho-threshold: 0.3         # below this pairwise correlation, a co-reporting source counts independent
+    w1: 2.0                    # misinfo-risk weight: (1 - credibility)
+    w2: 0.5                    # misinfo-risk weight: claim-velocity anomaly
+    w3: 0.7                    # misinfo-risk weight: independent-corroboration count (reduces risk)
+    v0: 1.5                    # velocity z-score baseline before it contributes to risk
+    tau-risk: 0.7              # narrative-risk-alert threshold on MisinfoRisk
+    tau-velocity: 2.0          # narrative-risk-alert threshold on claim-velocity z-score
+    risk-aversion: 0.6         # how much misinfo risk discounts evidence weight, (0,1]
+    tau-stability: 0.6         # population-relative-stability gate: >= this uses Gittins, else Thompson
+    gittins-z: 1.5             # UCB-style exploration bonus multiplier on the Gittins index
+
   # Stage 9c — ClickHouse analytics store (trade-signal / transaction history).
   # Off by default: only "docker" (local) and "prod" turn this on, since it
   # requires a live ClickHouse instance. See docker-compose.yml.
