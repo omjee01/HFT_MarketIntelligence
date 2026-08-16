@@ -27,6 +27,7 @@ application-secrets.yml
 !.env.example
 secrets.yml
 secrets.properties
+docs/CREDENTIALS.local.md
 
 # ─── Logs ─────────────────────────────────────────────────────────────────────
 logs/
