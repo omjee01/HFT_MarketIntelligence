@@ -1878,10 +1878,19 @@ Recommendation thresholds (reuses the existing 4-state `IPOData.recommendation` 
 ```
 APPLY_STRONG : CompositeScore ≥ 75  AND  predictedListingGainPercent ≥ 15%
 APPLY        : CompositeScore ≥ 60
-RISKY        : 40 ≤ CompositeScore < 60,  OR  (DemandScore high, ValuationScore < 30 —
+RISKY        : 40 ≤ CompositeScore < 60,  OR  (DemandScore ≥ 60, ValuationScore < 40 —
                 "hype-driven pop, weak fundamentals")
 AVOID        : CompositeScore < 40,  OR  peAtIssuePrice > industryPeAvg × 1.5 with DemandScore < 40
 ```
+
+**Corrected during implementation (2026-08-16):** the RISKY override originally read
+`ValuationScore < 30`. ValuationScore's own formula floors at exactly 30 (ratio clamped to
+≤70, so `100 − 70 = 30` is the minimum it can produce) — a value it can approach but never
+go below, making `< 30` unreachable dead code, not a real condition. Corrected to `< 40`,
+inside the formula's true [30,100] range, preserving the original intent (flag richly-valued,
+high-demand IPOs) with a threshold that can actually fire. `HIGH_DEMAND_THRESHOLD=60` and
+`RICH_VALUATION_THRESHOLD=40` are both named constants in `IPOAnalysisService`, not
+hardcoded — this doc's numbers now match the code exactly.
 
 Re-scoring cadence: `@Scheduled`, **not** a new Kafka topic — IPO subscription data updates a
 handful of times a day, not at HFT speed, so streaming infrastructure would be unjustified
